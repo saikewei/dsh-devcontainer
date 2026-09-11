@@ -155,49 +155,59 @@ A `web` profile holds the default port 3080, so both profiles can run at once on
 them moves; the patch above pins `webserver.port` to 3099 for that reason. `--port` on the command
 line still wins.
 
-### The mount point and the mirror
+### Three worlds: local, host, container
 
 A DSH workspace must be a **real local directory** — the workspace registry canonicalizes it with
-`node:fs` `realpath`, which never sees the container, so a container path cannot be registered. A
-local stand-in takes its place:
+`node:fs` `realpath`, which never sees the remote machine. Local stand-ins take its place, and a path
+resolves to one of three worlds:
 
 ```
-/Users/you/.dsh/devcontainer/ShutterSeek/cmd/main.go     (mountPoint: the primary project)
-/Users/you/.dsh/devcontainer/root/workspaces/Other/x.go  (mountRoot: anything in the container)
-        ↕   (same file)
-/workspaces/ShutterSeek/cmd/main.go
-/workspaces/Other/x.go
+/Users/you/.dsh/devcontainer/root/volume1/docker/ShutterSeek/x.go   (mountRoot: a HOST directory)
+/Users/you/.dsh/devcontainer/ShutterSeek/x.go                       (mountPoint: the project)
+        ↕
+        /volume1/docker/ShutterSeek/x.go                            (the host)
+        ↕  bind mount, discovered from Docker
+        /workspaces/ShutterSeek/x.go                                (the container)
 ```
 
-Both spellings resolve to the same target, and the tool reports the **container** path — so what the
-model reads matches what `pwd` and `go build` report from inside the container. Both directories are
-created on first boot if missing.
-
-`mountPoint` is the explicit one-to-one pair for the project you configured. `mountRoot` is a subtree
-that **mirrors the container's whole filesystem**, so the container path is recoverable from the mount
-path by prefix alone:
+`mountRoot` is a subtree that **mirrors the host's whole filesystem**, so the host path is recoverable
+from the stand-in by prefix alone — which is what lets any host directory become a workspace without
+recording a mapping anywhere:
 
 ```
-mountRoot + containerPath  =  mount path
+mountRoot + hostPath  =  stand-in
 ```
 
-That is what makes the workspace picker possible — any container directory can become a workspace
-without recording a mapping anywhere. Configure either or both; routing accepts both spellings
-regardless.
+`mountPoint` is the explicit one-to-one pair that points straight at a container path, for a project
+you configured up front. Configure either or both.
 
-### Picking a workspace from the container
+**Which world a mirrored workspace lands in is decided, not configured.** The folder is looked up
+against Docker's own labels; if a container was created from it, the workspace is reached *inside that
+container* at the path its bind mount gives. If not, it is reached on the host. That decision is made
+on a timer, not per call, because every filesystem and shell operation needs a world before it can act.
+
+A target key therefore carries its world (`host:<path>` / `container:<path>`): the same path exists on
+both machines, and `/etc/hosts` is a different file in each. Containment is only meaningful within one
+world.
+
+### Picking a workspace from the host
 
 The shipped "Add workspace" flow does not choose directories itself. It declares a **directory-flow
 hole** and asks whichever occupant is registered for one absolute host path. This plugin occupies
 both holes (the sidebar browser and the blank-session hero picker) and offers two tabs:
 
-* **本地** — delegates straight to the deployment's own directory picker, unchanged.
-* **容器** — browses the dev container itself and hands back the mirror path for the directory you
-  picked.
+* **本地** — delegates straight to the deployment's own directory picker, unchanged; these are
+  directories on the machine DSH runs on.
+* **远程** — browses the **host** the dev container runs on, marking every directory that carries a
+  `.devcontainer`. Picking one resolves the whole chain and hands back the stand-in path.
 
-So you can point a workspace at anything in the container, not just the project the row was
-configured with. The picker works in any profile that has the plugin; when that profile has routing
-off, it says so, because the workspace would then be an inert local stand-in.
+The picker browses the host rather than the container because that is the direction the causality
+runs: the folder is the project, and a dev container is an execution environment derived from it. The
+listing costs two calls per level rather than one probe per entry — a level can hold dozens of
+directories, and each probe would be a round trip.
+
+The picker works in any profile that has the plugin; when that profile has routing off, it says so,
+because the workspace would then be an inert local stand-in.
 
 The browse API is a small JSON surface under `/dsh-devcontainer` (`config`, `list`, `prepare`) on the
 loopback web server. It is registered whenever a stand-in is configured, **not** only when routing is
@@ -213,13 +223,15 @@ the dialog states that a workspace registered there will be an inert local stand
 | `container` | *(empty)* | Container name or id. Empty means every call fails with a configuration error. |
 | `containerRoot` | `/` | Absolute path inside the container that paths default to. |
 | `hostRoot` | *(empty)* | The same directory as the host sees it. Reported by `devc_status` for orientation only. |
-| `mountPoint` | *(empty)* | Local directory standing for `containerRoot` — the explicit one-to-one pair for the primary project. |
-| `mountRoot` | *(empty)* | Local directory whose subtree mirrors the container's whole filesystem, so any container directory can be addressed (and picked). |
+| `mountPoint` | *(empty)* | Local directory standing for `containerRoot` — the explicit one-to-one pair that points straight at a container path. |
+| `mountRoot` | *(empty)* | Local directory whose subtree mirrors the **host's** whole filesystem, so any host directory can be addressed and picked. |
 | `tools` | `true` | Register the `devc_*` tools. |
 | `provideFs` | `false` | Provide the routing `ctx.fs`. Requires `fs-sandbox` disabled. |
 | `provideShell` | `false` | Provide the routing `ctx.shell`. Requires `bash-sandbox` disabled. |
 | `provideSearch` | `false` | Register path-routed `glob`/`grep`. Requires `tool-fs-search` disabled. |
 | `prompt` | `false` | Register a system-prompt section explaining the container to the model. |
+| `hostTools` | `true` | Register the `devc_host_*` tools and `devc_containers`. |
+| `browseRoot` | *(hostRoot's parent)* | Where the workspace picker starts browsing on the host. |
 | `autoWorkspace` | `false` | Register the mount point as a workspace on boot. |
 | `workspaceTitle` | *(container root basename)* | Display title for the auto-registered workspace. |
 | `defaultTimeoutMs` | `120000` | Per-command ceiling when the caller states none. |

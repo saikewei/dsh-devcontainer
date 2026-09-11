@@ -241,10 +241,16 @@ route container paths, which is the only place such a workspace means anything â
 
 The browse API is a small JSON surface under `/dsh-devcontainer` (`config`, `list`, `prepare`) on the
 loopback web server. It is registered whenever a stand-in is configured â€” and only then, because a
-stand-in is what makes container directories addressable at all. A profile that mounts the plugin
-without one (tools only) serves no such API, and the client half detects that and hands the
-interaction to the deployment's own chooser instead of drawing a dialog it cannot act on.
-`examples/web-tools-only.cordis.patch.yml` is that configuration.
+stand-in is what makes container directories addressable at all.
+
+A profile that mounts the plugin without one (tools only) serves no such API, and the client half
+probes for it before claiming the directory-flow hole. That probe matters more than it looks: the
+directory-picker seam is a *discriminated capability*, so a `native` backend answers
+`pickDirectory()` while a `browse` backend serves listing primitives for an in-app browser this
+bundle cannot reproduce. Claiming the hole with nothing to offer would displace the only thing that
+can render a `browse` deployment. Declining leaves the deployment's own chooser in place, exactly as
+if this plugin were not installed. Only a definitive `404` counts as absent; an ambiguous failure
+keeps the occupant, so a transient hiccup cannot silently remove a working picker.
 
 ### Keeping container workspaces out of your other profiles
 

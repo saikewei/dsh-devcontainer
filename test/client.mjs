@@ -128,6 +128,16 @@ check(
 )
 
 console.log('\n-- a profile with no stand-in keeps a working picker --')
+// The bundle is delivered wherever the package is installed, but the API behind the dialog
+// only exists where a stand-in is configured. Taking the slot anyway would displace the
+// deployment's own chooser — and that chooser is the only thing that can render a `browse`
+// backend, whose seam exposes listing primitives rather than `pickDirectory()`.
+check(
+  'apply probes for the container API before claiming the hole',
+  /async function apply\(ctx\) \{\s*\n\s*if \(!\(await containerApiMounted\(\)\)\) return/.test(source),
+)
+check('only a definitive 404 counts as absent', /return response\.status !== 404/.test(source))
+check('an ambiguous failure keeps the occupant', /catch \(problem\) \{\s*\n\s*return true\s*\n\s*\}/.test(source))
 const rising = resets[0] ?? ''
 check(
   'an absent container API defers instead of erroring',

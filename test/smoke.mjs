@@ -63,9 +63,18 @@ function fakeSubprocess() {
 const registry = new Map()
 const disposers = []
 const ctx = {
+  // `get` models "no optional service available": a real Cordis context always has it, and
+  // the plugin's optional lookups (webServer, workspaceRegistry) must tolerate absence.
+  get: () => undefined,
   subprocess: fakeSubprocess(),
   tools: { register: (definition) => { registry.set(definition.name, definition); return () => {} } },
-  effect: (callback) => { const disposer = callback(); disposers.push(disposer); return () => {} },
+  effect: (callback) => {
+    const disposer = callback()
+    // A contribution that had nothing to register returns undefined, which the real
+    // Cordis effect tolerates; the fake has to as well.
+    if (typeof disposer === 'function') disposers.push(disposer)
+    return () => {}
+  },
   logger: { info: () => {}, warn: (...a) => console.log('[warn]', ...a) },
 }
 

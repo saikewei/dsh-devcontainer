@@ -71,6 +71,9 @@ console.log('real registry up; existing tools:', app.tools.schemas().length)
 const captured = new Map()
 const realRegister = app.tools.register.bind(app.tools)
 const ctx = {
+  // See smoke.mjs: a real Cordis context always offers `get`; this stands in for "the
+  // optional webServer is not mounted", which is the standalone case.
+  get: () => undefined,
   tools: {
     register(definition) {
       captured.set(definition.name, definition)
@@ -78,7 +81,7 @@ const ctx = {
     },
   },
   subprocess: fakeSubprocess(),
-  effect: () => () => {},
+  effect: (callback) => { const disposer = callback(); return () => {} },
 }
 
 apply(ctx, CONFIG)

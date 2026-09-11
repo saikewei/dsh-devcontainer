@@ -151,7 +151,10 @@ configured with. The picker works in any profile that has the plugin; when that 
 off, it says so, because the workspace would then be an inert local stand-in.
 
 The browse API is a small JSON surface under `/dsh-devcontainer` (`config`, `list`, `prepare`) on the
-loopback web server.
+loopback web server. It is registered whenever a stand-in is configured, **not** only when routing is
+on — the profile an operator is actually looking at is often the one without routing.
+`examples/web-add-mount-root.cordis.patch.yml` is that patch for such a profile: the picker works, and
+the dialog states that a workspace registered there will be an inert local stand-in.
 
 ## Configuration
 

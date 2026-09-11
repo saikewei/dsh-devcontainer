@@ -235,14 +235,39 @@ runs: the folder is the project, and a dev container is an execution environment
 listing costs two calls per level rather than one probe per entry — a level can hold dozens of
 directories, and each probe would be a round trip.
 
-The picker works in any profile that has the plugin; when that profile has routing off, it says so,
-because the workspace would then be an inert local stand-in.
+The picker appears in exactly the profiles that configure a stand-in. Those are the profiles that can
+route container paths, which is the only place such a workspace means anything — see
+[Keeping container workspaces out of your other profiles](#keeping-container-workspaces-out-of-your-other-profiles).
 
 The browse API is a small JSON surface under `/dsh-devcontainer` (`config`, `list`, `prepare`) on the
-loopback web server. It is registered whenever a stand-in is configured, **not** only when routing is
-on — the profile an operator is actually looking at is often the one without routing.
-`examples/web-add-mount-root.cordis.patch.yml` is that patch for such a profile: the picker works, and
-the dialog states that a workspace registered there will be an inert local stand-in.
+loopback web server. It is registered whenever a stand-in is configured — and only then, because a
+stand-in is what makes container directories addressable at all. A profile that mounts the plugin
+without one (tools only) serves no such API, and the client half detects that and hands the
+interaction to the deployment's own chooser instead of drawing a dialog it cannot act on.
+`examples/web-tools-only.cordis.patch.yml` is that configuration.
+
+### Keeping container workspaces out of your other profiles
+
+A DSH workspace has to be a real local directory, so a routing profile necessarily registers paths
+that mean nothing without the routers — `/Users/you/.dsh/devcontainer/root/nas/volume1/docker/proj`
+is a real but **empty** directory that stands for a container path. The workspace registry lives in
+`$DSH_HOME/storages/workspace.json`, which is **shared by every profile**, so such an entry also
+appears in the profiles that cannot route it, where it opens to nothing.
+
+Give each routing profile a registry of its own:
+
+```yaml
+- id: storage-json
+  config:
+    root: !!js dshHomePath('profiles/devcontainer/storages')
+```
+
+Session logs are unaffected — they live in the shared `$DSH_HOME/sessions`, so every profile still
+sees every conversation. Only the workspace list (and its projection cache) becomes per-profile, and
+a new store starts as a copy of nothing: re-add the workspaces you want in that profile.
+
+The client half is worth installing in a tools-only profile precisely because it knows to stay out of
+the way; `examples/web-tools-only.cordis.patch.yml` shows the configuration.
 
 ## Configuration
 
@@ -253,7 +278,7 @@ the dialog states that a workspace registered there will be an inert local stand
 | `containerRoot` | `/` | Absolute path inside the container that paths default to. |
 | `hostRoot` | *(empty)* | The same directory as the host sees it. Reported by `devc_status` for orientation only. |
 | `mountPoint` | *(empty)* | Local directory standing for `containerRoot` — the explicit one-to-one pair that points straight at a container path. |
-| `mountRoot` | *(empty)* | Local directory whose subtree mirrors the **host's** whole filesystem, so any host directory can be addressed and picked. |
+| `mountRoot` | *(empty)* | Local directory whose subtree mirrors the **host's** whole filesystem, so any host directory can be addressed and picked. Setting either one also turns on the workspace picker; see [Keeping container workspaces out of your other profiles](#keeping-container-workspaces-out-of-your-other-profiles). |
 | `tools` | `true` | Register the `devc_*` tools. |
 | `provideFs` | `false` | Provide the routing `ctx.fs`. Requires `fs-sandbox` disabled. |
 | `provideShell` | `false` | Provide the routing `ctx.shell`. Requires `bash-sandbox` disabled. |
@@ -438,10 +463,6 @@ never disagree about which binary that is. This is why the profile disables `too
   point if you need a catalog there.
 * The mount point path and the container path are different strings. The model is told the mapping
   through the `prompt` section; targets it sees are always container paths.
-* **The workspace registry is shared across profiles** (`$DSH_HOME/storages/workspace.json`), so a
-  mount-point workspace registered by the container profile also appears in every other profile. It is
-  only *routed* where `provideFs`/`provideShell` are on; opening it in a plain profile shows the empty
-  local stand-in.
 * Container-side writes bypass the local sandbox by design (see above). Only `provideFs` changes
   local-path behaviour, and it changes none of it.
 

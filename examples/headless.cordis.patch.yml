@@ -11,6 +11,15 @@
 #   dsh --profile dcheadless "Use your bash tool with workdir <mountPoint> and command \
 #     'hostname; test -f /.dockerenv && echo IN_CONTAINER; pwd'. Report it verbatim."
 
+# A DSH workspace must be a real local directory — the registry canonicalizes it with
+# node:fs realpath, which never sees the container — so a routing profile necessarily
+# registers paths that mean nothing without the routers. Keep them in a registry of this
+# profile's own rather than in the shared $DSH_HOME/storages, where they would also appear
+# in every other profile and open as empty directories.
+- id: storage-json
+  config:
+    root: !!js dshHomePath('profiles/dcheadless/storages')
+
 # Replaced by the routing filesystem provider.
 - id: fs-sandbox
   disabled: true

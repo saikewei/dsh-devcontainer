@@ -18,6 +18,17 @@
 # outside the mount point, so the local branch keeps the deployment's sandbox semantics
 # exactly; only the container subtree is dispatched elsewhere.
 
+# A DSH workspace must be a real local directory — the registry canonicalizes it with
+# node:fs realpath, which never sees the container — so this profile necessarily registers
+# paths that mean nothing without the routers. Give the profile its OWN workspace registry
+# so those paths stay here. Without this, `mountPoint`/`mountRoot` entries land in the
+# shared $DSH_HOME/storages and appear in every other profile too, where nothing routes
+# them and they open as empty directories. Session logs are unaffected: they live in the
+# shared $DSH_HOME/sessions, so every profile still sees every conversation.
+- id: storage-json
+  config:
+    root: !!js dshHomePath('profiles/devcontainer/storages')
+
 # Replaced by the routing filesystem provider.
 - id: fs-sandbox
   disabled: true
@@ -70,7 +81,7 @@
     provideShell: true
     provideSearch: true
     prompt: true
-    # Registering a workspace is your call, not the plugin's: the registry is shared across
-    # profiles under $DSH_HOME/storages, so an auto-registered entry also shows up in every
-    # other profile, where it is not routed and looks empty. Add the mount point by hand.
+    # Registering a workspace is your call, not the plugin's. With the `storage-json` row
+    # above an auto-registered entry at least stays inside this profile; without it, it
+    # would also show up in every other profile, where it is not routed and looks empty.
     autoWorkspace: false

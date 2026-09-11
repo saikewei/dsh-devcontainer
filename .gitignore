@@ -1,0 +1,11 @@
+# Dependencies — the plugin itself has none, but the test suites import the harness
+# packages, so a checkout that runs tests has them installed.
+node_modules/
+
+# Your own test target. Copy test/config.example.mjs here; never commit it.
+test/config.local.mjs
+
+# macOS
+.DS_Store
+
+*.log

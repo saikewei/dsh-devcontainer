@@ -1,0 +1,70 @@
+# Example profile layer for ROUTING MODE.
+#
+# Copy this into a profile of its own and fill in your own values, so your daily profile
+# keeps the shipped local providers:
+#
+#   dsh --profile devcontainer --from-default-profile web --dump-config
+#   dsh plugin --profile devcontainer add /path/to/dsh-devcontainer
+#   cp examples/devcontainer.cordis.patch.yml ~/.dsh/profiles/devcontainer/cordis.patch.yml
+#   $EDITOR ~/.dsh/profiles/devcontainer/cordis.patch.yml
+#   dsh --profile devcontainer
+#
+# This profile's whole point: the harness's ORDINARY bash / read / write / edit / glob /
+# grep operate inside the Docker dev container, for any path under the mount point.
+#
+# How it works: dsh-devcontainer provides routing replacements for two host-plane
+# capability seams, so the shipped providers they replace must be switched off. The
+# routers EXTEND those shipped implementations and delegate to them for every path
+# outside the mount point, so the local branch keeps the deployment's sandbox semantics
+# exactly; only the container subtree is dispatched elsewhere.
+
+# Replaced by the routing filesystem provider.
+- id: fs-sandbox
+  disabled: true
+
+# Replaced by the routing bash executor.
+- id: bash-sandbox
+  disabled: true
+
+# glob/grep spawn a PACKAGED LOCAL ripgrep through `ctx.subprocess` — not through
+# `ctx.fs` and explicitly never through `ctx.shell` — so no seam can route them, and a
+# mount-point path makes ripgrep fail with ENOENT. Routing mode owns these two names and
+# dispatches on the requested path instead.
+- id: tool-fs-search
+  disabled: true
+
+# Optional. A second profile running at the same time as the shipped web profile needs its
+# own port, since that one binds 3080. A patch replaces the whole config object, so restate
+# `host` alongside `port`; `--port` on the command line still wins, because the composed
+# expression reads the startup service first. Delete this block if you only run one profile.
+- id: webserver
+  config:
+    host: !!js ctx.webStartup.host ?? '127.0.0.1'
+    port: !!js ctx.webStartup.port ?? 3099
+
+- id: devcontainer
+  config:
+    # SSH destination, resolved through your own ~/.ssh/config.
+    sshHost: my-nas
+    # Container name or id on that host. It must already be running.
+    container: my-project-devcontainer
+    # Absolute path inside the container that tools and routed paths default to.
+    containerRoot: /workspaces/my-project
+    # The same directory as the host sees it, when it is a bind mount. Informational.
+    hostRoot: /volume1/docker/my-project
+    # A LOCAL directory standing for containerRoot — required, because a DSH workspace must
+    # be a real local directory (the registry canonicalizes it with node:fs realpath, which
+    # never sees the container). Everything beneath it runs inside the container. The plugin
+    # creates it on first boot.
+    mountPoint: /Users/you/.dsh/devcontainer/my-project
+    # The devc_* tools stay available for container paths outside the mount point
+    # (/go, /usr/local/go, /home/vscode, other mounts).
+    tools: true
+    provideFs: true
+    provideShell: true
+    provideSearch: true
+    prompt: true
+    # Registering a workspace is your call, not the plugin's: the registry is shared across
+    # profiles under $DSH_HOME/storages, so an auto-registered entry also shows up in every
+    # other profile, where it is not routed and looks empty. Add the mount point by hand.
+    autoWorkspace: false

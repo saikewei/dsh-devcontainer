@@ -1,0 +1,29 @@
+# The dsh-devcontainer bundle patch.
+#
+# One insert over the profile root. The row resolves this same package by name from
+# the profile's node_modules, so `dsh plugin add dsh-devcontainer` is the whole
+# installation: package plus row, nothing to hand-edit.
+#
+# These are the TOOLS-ONLY defaults: the devc_* tools are registered and nothing in
+# the harness changes. To also route the ordinary bash/read/write/edit/glob/grep seams
+# into the container, a profile overrides this row (see README "Routing mode") with
+# `provideFs`/`provideShell`/`mountPoint` and disables the `fs-sandbox` and
+# `bash-sandbox` rows, which the routers replace.
+#
+# Address the row by id (`devcontainer`) from your profile cordis.patch.yml to
+# override any of its config values; a patch replaces the whole `config` object,
+# so restate every key you need rather than only the one you are changing.
+
+- insert:
+    - id: devcontainer
+      name: 'dsh-devcontainer'
+      config:
+        sshHost: nas
+        container: epic_mirzakhani
+        containerRoot: /workspaces/ShutterSeek
+        hostRoot: /volume1/docker/ShutterSeek
+        mountPoint: ''
+        tools: true
+        provideFs: false
+        provideShell: false
+        prompt: false

@@ -1,0 +1,39 @@
+# Example profile layer for a ONE-SHOT verification profile, built from the shipped
+# headless template. Same routing configuration as examples/devcontainer.cordis.patch.yml,
+# minus the web-server override that only exists in a web profile. This is how you
+# regression-test routing through a real agent session without opening a browser:
+#
+#   dsh --profile dcheadless --from-default-profile headless --dump-config
+#   dsh plugin --profile dcheadless add /path/to/dsh-devcontainer
+#   cp examples/headless.cordis.patch.yml ~/.dsh/profiles/dcheadless/cordis.patch.yml
+#   $EDITOR ~/.dsh/profiles/dcheadless/cordis.patch.yml
+#
+#   dsh --profile dcheadless "Use your bash tool with workdir <mountPoint> and command \
+#     'hostname; test -f /.dockerenv && echo IN_CONTAINER; pwd'. Report it verbatim."
+
+# Replaced by the routing filesystem provider.
+- id: fs-sandbox
+  disabled: true
+
+# Replaced by the routing bash executor.
+- id: bash-sandbox
+  disabled: true
+
+# glob/grep spawn a PACKAGED LOCAL ripgrep through `ctx.subprocess` — see the note in
+# examples/devcontainer.cordis.patch.yml.
+- id: tool-fs-search
+  disabled: true
+
+- id: devcontainer
+  config:
+    sshHost: my-nas
+    container: my-project-devcontainer
+    containerRoot: /workspaces/my-project
+    hostRoot: /volume1/docker/my-project
+    mountPoint: /Users/you/.dsh/devcontainer/my-project
+    tools: true
+    provideFs: true
+    provideShell: true
+    provideSearch: true
+    prompt: true
+    autoWorkspace: false

@@ -1,5 +1,7 @@
 # dsh-devcontainer
 
+English | [中文](README.zh.md)
+
 Develop inside a **Docker dev container on a remote machine**, straight from DeepSeek Harness.
 
 The container is the execution world: commands, file reads/writes/edits, grep and glob all run

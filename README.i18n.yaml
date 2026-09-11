@@ -1,0 +1,13 @@
+# Bilingual-pair consistency record, following DeepSeek Harness's own convention
+# (`@deepseek-ai/dsh-base/README.i18n.yaml`): the git blob hash of each side as of the last
+# confirmed-consistent state. Both languages carry equal authority — neither is a
+# translation of record that may lag the other.
+#
+# After editing EITHER side, bring the other along and re-record:
+#
+#   node test/readme-pair.mjs --write
+#
+# `npm run test:unit` fails when these hashes no longer match the files, so drift is caught
+# by the suite rather than by a reader who happens to notice.
+README.md: ca4637f235e7b467a02f19f2d109e9802c1ce1e3
+README.zh.md: d562636a1fee24ac31ecad620a3879d7009b158a

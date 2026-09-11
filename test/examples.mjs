@@ -116,9 +116,14 @@ console.log('\n-- every tool the plugin registers is documented --')
 // named in passing but described nowhere.
 const registered = [...new Set([...source.matchAll(/name: '(devc_[a-z_]+)'/g)].map((m) => m[1]))]
 check('the plugin registers tools', registered.length >= 8, String(registered.length))
-const readmeText = read('README.md')
-const undocumented = registered.filter((name) => !readmeText.includes(name))
-check('none is missing from the README', undocumented.length === 0, undocumented.join(', '))
+// Both languages, not just the canonical one: the pairing record proves the two sides were
+// re-recorded together, not that either of them actually documents what the code registers.
+for (const name of ['README.md', 'README.zh.md']) {
+  if (!existsSync(join(root, name))) continue
+  const text = read(name)
+  const undocumented = registered.filter((tool) => !text.includes(tool))
+  check(`none is missing from ${name}`, undocumented.length === 0, undocumented.join(', '))
+}
 
 console.log('\n-- the isolation recipe is stated, not just implied --')
 const readme = read('README.md')

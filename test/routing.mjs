@@ -127,13 +127,18 @@ try {
 check('a stale version guard is rejected', staleRejected)
 
 let ambiguousRejected = false
+let ambiguousCode = null
 try {
   // Content is "alpha\nBETA\n": lowercase 'a' genuinely appears twice.
   await fs.editText(scratch, { oldString: 'a', newString: 'Z', replaceAll: false })
 } catch (error) {
   ambiguousRejected = String(error.message).includes('replace_all')
+  // The CODE matters as much as the message: consumers switch on it, and this one was
+  // 'FS_INVALID_ARGS', which is not in dsh-fs's FsErrorCode union at all.
+  ambiguousCode = error.code === undefined ? null : String(error.code)
 }
 check('an ambiguous edit is rejected', ambiguousRejected)
+check('with a code from the shipped vocabulary', ambiguousCode === 'FS_AMBIGUOUS_EDIT', String(ambiguousCode))
 check('the rejected edit left the file untouched', (await fs.readText(scratch)).includes('BETA'))
 
 const bytes = await fs.readBytes(scratch, undefined, 1024)

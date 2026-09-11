@@ -288,6 +288,39 @@ read  (file_path = 挂载点/go.mod):
 
 ---
 
+## 附二：设计说明（原 README「Design notes」，为精简 README 迁入）
+
+以下每一条都是实现中撞到才发现的约束，写在这里以免下次重踩。
+
+* **零运行时依赖是刻意设计，并且是可行的。** 除 Node 内建模块（`node:fs/promises`、`node:path`、
+  `node:os`、`node:child_process`）之外，包不导入任何第三方模块；路由模块另外导入它所扩展的两个
+  随包沙箱实现，搜索模块导入随包搜索模块以取得 ripgrep 路径。原因见上一节：profile 安装是符号
+  链接，Node 从真实路径解析裸标识符，任何依赖都会解析失败。
+* **同级 `node_modules` 会改变解析位置。** 跑了 `npm install`（只为测试存在）之后，插件会从*本
+  仓库的* `node_modules` 解析 `@deepseek-ai/*`，而不是从 harness 安装目录。两份版本相同、端到端
+  也验证过；但只用于部署的 checkout 应当删掉 `node_modules`，否则它会携带自己的一份 harness 包。
+* **service 类里不能有私有成员。** Cordis 通过 `Proxy` 分发服务，`#private` 成员无法穿透 Proxy
+  访问——私有 brand 检查会以 *"Receiver must be an instance of class …"* 失败。所以辅助逻辑一律
+  放在模块级函数里，`RoutingFileSystem` / `RoutingBashExecutor` 自身没有 `#` 字段（`Worlds` 是
+  普通辅助类，不受此限）。
+* **版本 token 是 `mtimeMs:size`。** 读取与列举回的是 `size`，写入与编辑回的是 `bytes`；token 取
+  两者中存在的那个。若把一次写入的字节数当成"缺失的 size"，每次新写入都会被盖上 size 0 的戳，
+  进而让下一次带守卫的编辑误报 stale version。
+* **通道自愈。** 掉线不是致命的：挂起的调用以可读消息 reject，下一次调用按需重连。
+* **helper 每次连接都重写**，所以容器永远不会与插件漂移，容器里也无须预装任何东西。
+* **所有副作用由 Fiber 持有**（`ctx.effect`），停止或更新插件会连带拆除通道、路由器与每个工具。
+* **目录选择器 seam 是判别式能力。** `native` 后端提供 `pickDirectory()`；`browse` 后端只提供
+  `list()`/`createDirectory()`，其界面是应用内对话框，插件 bundle 无法复现。因此客户端半边在
+  占用 directory-flow hole 之前会先探测容器 API，**只把确定的 404 当作"未挂载"**——含糊的失败
+  保留占用，避免一次瞬时抖动就悄悄弄丢可用的选择器。
+* **两组存储默认共享，且都会泄漏。** `storage-json.root`（工作区注册表）与
+  `session-persistence-jsonl.root`（会话日志）默认都在 `$DSH_HOME` 下、被所有 profile 共用。只
+  隔离注册表不够：工作区消失了，对话却会落进 UI 的 **Ungrouped** 桶（"不属于任何工作区的会话"
+  的去处）继续可见。两个根都要按 profile 覆盖。README 的「把容器世界挡在你的其它 profile 之外」
+  一节给了可直接复制的 YAML。
+
+---
+
 ## 附：本次产出文件
 
 | 文件 | 说明 |

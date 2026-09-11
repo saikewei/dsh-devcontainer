@@ -81,6 +81,11 @@ check('the README references the examples', referenced.size > 0, String(referenc
 const dangling = [...referenced].filter((name) => !examples.includes(name))
 check('every referenced example exists', dangling.length === 0, dangling.join(', '))
 
+// The other direction: an example no document points at is one nobody will find. Slimming
+// the README orphaned two of them, which is exactly the kind of loss a size edit causes.
+const orphaned = examples.filter((name) => !referenced.has(name))
+check('every example is referenced by a document', orphaned.length === 0, orphaned.join(', '))
+
 // The package publishes `files`, so an example the README cites but `files` omits is
 // invisible to anyone who installed from npm.
 const pkg = JSON.parse(read('package.json'))

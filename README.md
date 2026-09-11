@@ -38,6 +38,55 @@ container, speaking JSON-lines RPC. Measured on the same link, per operation:
 
 One-time connect cost is ~870 ms, paid lazily on the first call.
 
+## Two execution surfaces
+
+The plugin reaches the remote machine over SSH and can run work in **either** of two worlds:
+
+| Surface | What it is | Tools |
+| --- | --- | --- |
+| **host** | the remote machine itself — where the project directory lives and where Docker runs | `devc_host_exec`, `devc_host_read`, `devc_host_write`, `devc_host_ls`, `devc_containers` |
+| **container** | the dev container, reached with `docker exec` | `devc_status`, `devc_exec`, `devc_read`, … |
+
+The host surface is deliberately smaller. The container is where development happens; the host
+is where you look at what exists and decide what to attach to. Under routing mode these two
+collapse into one world per path — see [Install — routing mode](#install--routing-mode).
+
+### The SSH layer is standalone, but rides `ctx.ssh` when it is there
+
+One transport, two backends, chosen by what the deployment composed rather than by a config flag:
+
+* **`ctx.ssh`** — [dsh-ssh](https://github.com/UynajGI/dsh-ssh)'s shared connection owner, when a
+  deployment mounts it. That brings an authenticated ssh2 client with its own `~/.ssh/config`
+  handling, host-key policy, ProxyJump and keepalive.
+* **the local `ssh` binary** — the fallback, and the reason this plugin needs no dependency at all.
+  Shelling out to OpenSSH inherits your real `~/.ssh/config`, keys, agent and jump hosts for free.
+
+Callers never learn which answered; the channel protocol above it is identical.
+
+### Finding the dev container instead of building one
+
+A container started from a `.devcontainer` is already self-describing — Dev Containers writes
+`devcontainer.local_folder=<host folder>` onto it, and Docker records the bind mount that maps that
+folder inside. So **`devcontainer up` does not have to be implemented** for a container that already
+exists:
+
+```
+folder /volume1/docker/ShutterSeek
+   │  docker ps --filter label=devcontainer.local_folder=/volume1/docker/ShutterSeek
+   ├─▶ container epic_mirzakhani  (running)
+   │  docker inspect … --format '{{range .Mounts}}…'
+   └─▶ container path /workspaces/ShutterSeek
+```
+
+`devc_containers` answers exactly that, for one folder or for every dev container on the host.
+It also reports whether the folder carries a `.devcontainer` at all.
+
+What it deliberately does **not** do is *build* a container. Turning a `.devcontainer` into a
+running container means Dockerfile builds, Features, `mounts`, `runArgs` and `postCreateCommand` —
+that is `@devcontainers/cli`'s job, not a plugin's. A container that already exists is attached;
+a stopped one is started with `docker start`; a folder with a `.devcontainer` but no container yet
+is reported as such, and opening it once in VS Code or running `devcontainer up` makes it appear.
+
 ## Requirements
 
 * **The dev container already runs on the remote host.** This plugin attaches to a container; it

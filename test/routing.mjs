@@ -5,6 +5,9 @@
 // everywhere else.
 import { mkdir, rm } from 'node:fs/promises'
 import { Context } from '@deepseek-ai/cordis'
+import { Worlds, createRoutingFileSystem, createRoutingShellExecutor } from '../lib/routing.js'
+import { RemoteTransport } from '../lib/transport.js'
+import { RemoteChannel } from '../lib/channel.js'
 import { CONFIG as TARGET, requireTarget } from './config.mjs'
 
 requireTarget('sshHost', 'container', 'containerRoot')
@@ -14,8 +17,6 @@ const CONFIG = {
   // Routing mode: the shipped `fs-sandbox` and `bash-sandbox` are deliberately NOT mounted
   // below, so the routers must take their seams.
   tools: false,
-  provideFs: true,
-  provideShell: true,
   prompt: false,
 }
 
@@ -40,6 +41,57 @@ const check = (label, ok, detail) => {
   if (!ok) failures++
 }
 
+
+/**
+ * Build the realm a routed session gets, the way `lib/agent-hook.js` builds it.
+ *
+ * Routing is per session, so this test constructs the same pieces the hook does — the world
+ * resolver, the per-target channel lookup, and the two routers — instead of relying on the
+ * plugin to publish them process-wide (which it deliberately no longer does).
+ */
+async function mintRealm(root) {
+  const worlds = new Worlds(CONFIG)
+  worlds.setResolved([{
+    localPrefix: CONFIG.mountPoint,
+    host: CONFIG.sshHost,
+    world: 'container',
+    remotePath: CONFIG.containerRoot,
+  }])
+  // The container's own spelling has to keep resolving: tools hand back raw container paths,
+  // and a workspace can name one directly. The plugin derives this on its refresh timer.
+  worlds.setKnownRoots([{ host: CONFIG.sshHost, path: CONFIG.containerRoot }])
+
+  const transports = new Map()
+  const transportFor = (host) => {
+    let found = transports.get(host)
+    if (found === undefined) {
+      found = new RemoteTransport({ get: () => undefined }, host, CONFIG.sshHost)
+      transports.set(host, found)
+    }
+    return found
+  }
+  const channels = new Map()
+  const forTarget = (target) => {
+    const key = [target.host, target.world, target.container ?? ''].join('|')
+    let channel = channels.get(key)
+    if (channel === undefined) {
+      channel = new RemoteChannel(transportFor(target.host), { ...CONFIG, container: target.container ?? CONFIG.container }, target.world)
+      channels.set(key, channel)
+    }
+    return channel
+  }
+
+  const realm = root.isolate('fs').isolate('shell')
+  realm.plugin(createRoutingFileSystem({ forTarget }, worlds))
+  realm.plugin(createRoutingShellExecutor({ forTarget }, worlds))
+  await settle()
+  realm.effect(() => () => {
+    for (const channel of channels.values()) channel.dispose()
+    for (const transport of transports.values()) transport.dispose()
+  })
+  return realm
+}
+
 const app = new Context()
 app.plugin(pluginOf(await import('@deepseek-ai/dsh-system-prompt')))
 app.plugin(pluginOf(await import('@deepseek-ai/dsh-subprocess-local')))
@@ -61,13 +113,20 @@ check('ctx.shell is not yet provided', app.shell === undefined)
 app.plugin(await import('../lib/index.js'), CONFIG)
 await settle()
 
-console.log('\n-- routing providers took the seams --')
-console.log('ctx.fs    :', app.fs ? app.fs.constructor.name : '(none)')
-console.log('ctx.shell :', app.shell ? app.shell.constructor.name : '(none)')
-check('ctx.fs is the router', app.fs !== undefined && app.fs.constructor.name === 'RoutingFileSystem')
-check('ctx.shell is the router', app.shell !== undefined && app.shell.constructor.name === 'RoutingBashExecutor')
+// Routing is per SESSION now, not a replacement of the process-wide seams: the plugin leaves
+// `ctx.fs`/`ctx.shell` alone and hands a routed session its own via an isolated realm. So the
+// acceptance below drives that realm's services, which is exactly what a routed session's
+// tools use.
+console.log('\n-- the plugin leaves the global seams alone --')
+check('ctx.fs is still unprovided by the plugin', app.fs === undefined, app.fs?.constructor?.name)
+check('ctx.shell is still unprovided by the plugin', app.shell === undefined, app.shell?.constructor?.name)
 
-const fs = app.fs
+console.log('\n-- a routed session gets a router of its own --')
+const realm = await mintRealm(app)
+const fs = realm.fs
+check('the session fs is the router', fs !== undefined && fs.constructor.name === 'RoutingFileSystem', fs?.constructor?.name)
+const shell = realm.shell
+check('the session shell is the router', shell !== undefined && shell.constructor.name === 'RoutingBashExecutor', shell?.constructor?.name)
 const mount = (rel) => CONFIG.mountPoint + (rel === undefined ? '' : '/' + rel)
 
 console.log('\n-- ctx.fs: container world via the mount point --')
@@ -106,7 +165,7 @@ check('stat on an absent container path returns undefined', missing === undefine
 console.log('\n-- ctx.fs: container mutations --')
 // A previous crashed run may have left the scratch file behind; createIfAbsent is
 // supposed to refuse that, so clear it first rather than asserting on stale state.
-await app.shell.run(app.shell.resolve({ command: 'rm -f .dsh-routing-test.txt', workdir: mount() }))
+await shell.run(shell.resolve({ command: 'rm -f .dsh-routing-test.txt', workdir: mount() }))
 const scratch = await fs.resolve(mount('.dsh-routing-test.txt'))
 const created = await fs.writeText(scratch, 'alpha\nbeta\n', { kind: 'createIfAbsent' })
 console.log('writeText ->', created.operation, String(created.version))
@@ -145,17 +204,17 @@ const bytes = await fs.readBytes(scratch, undefined, 1024)
 check('readBytes returns container bytes', Buffer.from(bytes).toString('utf8').includes('BETA'))
 
 console.log('\n-- ctx.shell: container world via the mount point --')
-const spec = app.shell.resolve({ command: 'echo "cwd=$(pwd)"; hostname; test -f /.dockerenv && echo in_container=yes', workdir: mount() })
+const spec = shell.resolve({ command: 'echo "cwd=$(pwd)"; hostname; test -f /.dockerenv && echo in_container=yes', workdir: mount() })
 console.log('resolved workdir ->', spec.workdir)
 check('resolve maps the mount point to the container path', spec.workdir === CONFIG.containerRoot)
 
-const result = await app.shell.run(spec)
+const result = await shell.run(spec)
 console.log('run stdout:', result.stdout.text.trim().split('\n').join(' | '))
 check('the command ran inside the container', result.stdout.text.includes('in_container=yes'))
 check('the command ran in the container workdir', result.stdout.text.includes('cwd=' + CONFIG.containerRoot))
 check('a successful run reports exit 0 and no sandbox facts', result.exitCode === 0 && result.sandbox === undefined)
 
-const failing = await app.shell.run(app.shell.resolve({ command: 'exit 7', workdir: mount() }))
+const failing = await shell.run(shell.resolve({ command: 'exit 7', workdir: mount() }))
 check('a non-zero exit is reported, not thrown', failing.exitCode === 7)
 
 console.log('\n-- ctx.shell: background streaming --')
@@ -168,7 +227,7 @@ let roundsComplete = 0
 let lastStreamed = ''
 let settledStatus = ''
 for (let round = 0; round < 5; round++) {
-  const proc = app.shell.start(app.shell.resolve({
+  const proc = shell.start(shell.resolve({
     command: 'for i in 1 2 3 4 5; do echo tick$i; done',
     workdir: mount(),
   }))
@@ -197,7 +256,7 @@ check(
 let localRun = null
 let localRefused = null
 try {
-  localRun = await app.shell.run(app.shell.resolve({ command: 'echo local-here; hostname', workdir: '/tmp' }))
+  localRun = await shell.run(shell.resolve({ command: 'echo local-here; hostname', workdir: '/tmp' }))
 } catch (error) {
   localRefused = String(error.code ?? error.message)
 }
@@ -231,7 +290,7 @@ check(
 console.log('\n-- cleanup --')
 const removeTarget = await fs.resolve(mount('.dsh-routing-test.txt'))
 try {
-  await app.shell.run(app.shell.resolve({ command: 'rm -f .dsh-routing-test.txt', workdir: mount() }))
+  await shell.run(shell.resolve({ command: 'rm -f .dsh-routing-test.txt', workdir: mount() }))
   check('scratch file removed', (await fs.stat(removeTarget)) === undefined)
 } catch (error) {
   check('scratch file removed', false, String(error.message))

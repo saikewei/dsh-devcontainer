@@ -66,6 +66,11 @@ const ctx = {
   // `get` models "no optional service available": a real Cordis context always has it, and
   // the plugin's optional lookups (webServer, workspaceRegistry) must tolerate absence.
   get: () => undefined,
+  // Routing arms a workspace-world refresh timer through ctx.inject; a fake context has to
+  // carry it, or the plugin's mount fails here rather than doing its job.
+  inject: () => undefined,
+  on: () => () => {},
+  effect: (fn) => { const disposer = typeof fn === 'function' ? fn() : undefined; return typeof disposer === 'function' ? disposer : () => {} },
   subprocess: fakeSubprocess(),
   tools: { register: (definition) => { registry.set(definition.name, definition); return () => {} } },
   effect: (callback) => {

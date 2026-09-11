@@ -74,6 +74,11 @@ const ctx = {
   // See smoke.mjs: a real Cordis context always offers `get`; this stands in for "the
   // optional webServer is not mounted", which is the standalone case.
   get: () => undefined,
+  // Routing arms a workspace-world refresh timer through ctx.inject; a fake context has to
+  // carry it, or the plugin's mount fails here rather than doing its job.
+  inject: () => undefined,
+  on: () => () => {},
+  effect: (fn) => { const disposer = typeof fn === 'function' ? fn() : undefined; return typeof disposer === 'function' ? disposer : () => {} },
   tools: {
     register(definition) {
       captured.set(definition.name, definition)

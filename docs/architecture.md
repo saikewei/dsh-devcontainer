@@ -237,12 +237,20 @@ ShellExecutor → LocalBashExecutor → SandboxBashExecutor → RoutingBashExecu
 `dsh-sandbox` 自己的模块文档就是这么说的：*"Containers, microVMs, and remote execution replace the
 surrounding capability seam instead."*
 
-### 实施中撞到并解决的四个真问题
+### 实施中撞到并解决的五个真问题
 
 1. **Cordis 用 Proxy 包裹 service，`#private` 成员穿透不了**，报 *"Receiver must be an instance of class …"*（私有品牌校验失败）。→ 服务类里改用模块级函数。
 2. **版本号字段不一致**：helper 的 `stat`/`list` 答 `size`，`write`/`edit` 答 `bytes`。把写入的 `bytes` 当成缺失的 size 会给每次新写入盖上 size 0 的版本，导致紧接着的带守卫编辑误报 `FS_STALE_VERSION`。→ 版本号同时读两个字段。
 3. **profile 里没有 `@deepseek-ai/*`**（`node_modules/@deepseek-ai/` 是空的）。之前的担心不成立：探针实测 9 个 specifier 全部解析成功，DSH 的 loader internal 机制覆盖了嵌套解析。
 4. **`writableRoots` 本来就包含 `/tmp` 与 `tmpdir()`**——测试里把"写 /tmp 被允许"误判成沙箱回归，实际是设计如此。
+5. **后台任务的首个 chunk 会间歇性丢失**（真 bug，不是测试问题）。`start()` 原本在 `exec_start` **响应返回之后**才挂事件监听器；而 helper 把响应帧和首批 chunk 帧写进同一个 TCP 读，channel 的行循环会在同一个同步循环里处理完所有这些帧——那时 `.then` 还是尚未执行的微任务，于是 chunk 被当作无人认领的帧丢掉。是否复现取决于内核如何合并写入，所以表现为偶发。
+   → 改为**通道级分派器**：首次启动容器进程时就注册常驻监听器，并为任何 `execId` 预先建缓冲（包括响应尚未读到的那些）。测试也相应加强为 5 轮无 sleep 的突发输出。
+
+   这条值得单独记一笔：它正是那种最容易被当成"flaky 测试"而忽略的偶发失败。
+
+### 整理成仓库时新增的一个认识
+
+`npm install`（只为测试装 devDependencies）之后，仓库根出现了 `node_modules/@deepseek-ai/*`。由于 profile 里的插件是**指向本仓库的软链**，Node 会从模块真实路径解析——插件于是开始用**仓库这份**拷贝，而不是 harness 安装那份。两份版本相同、端到端实测也通过，但这意味着一个"活的"插件仓库会携带自己的一份 harness 包。详见 README 的 Design notes。
 
 ### 端到端验收证据
 

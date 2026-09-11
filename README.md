@@ -252,9 +252,15 @@ dsh --profile dcheadless "Use your bash tool with workdir <mountPoint> and comma
 ## Design notes
 
 * **The package imports nothing at module scope except `node:fs/promises`** on the tools path; the
-  routing module additionally imports the two shipped sandboxed implementations it extends. Node
-  resolves bare specifiers from a module's real path, and DSH's loader reaches its own install for
-  `@deepseek-ai/*`, so a symlinked profile install resolves correctly.
+  routing module additionally imports the two shipped sandboxed implementations it extends, and the
+  search module imports the shipped search module for its ripgrep path.
+* **A sibling `node_modules` changes where those imports resolve.** Node resolves bare specifiers
+  from a module's real path. A profile install is a symlink to this checkout, so the real path is the
+  checkout — and after `npm install` (which exists only for the tests) the plugin resolves
+  `@deepseek-ai/*` from *this* `node_modules` rather than from the harness install. Both copies are
+  the same versions and the end-to-end session is verified either way, but it does mean a plugin
+  checkout used live carries its own copies of the harness packages. Delete `node_modules` from a
+  checkout you only deploy, or keep it and accept version-identical duplicates.
 * **No private class members in the service classes.** Cordis hands services out behind a `Proxy`, and
   a `#private` member cannot be reached through one — the private brand check fails with
   *"Receiver must be an instance of class …"*. Helper logic lives in module-level functions instead.

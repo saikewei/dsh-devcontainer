@@ -127,7 +127,7 @@ check('exec sees the container toolchain', /go1\.\d+/.test(exec.value))
 check('resident channel keeps calls fast', exec.ms < 2000, String(exec.ms) + ' ms')
 
 const read = await call('devc_read', { path: CONFIG.containerRoot + '/go.mod', limit: 3 })
-check('read returns line-numbered content', /^\s*1\s+module shutterseek/m.test(read.value))
+check('read returns line-numbered content', /^\s*1\s+module \S+/m.test(read.value))
 
 const scratch = '/tmp/dsh-devcontainer-registry/note.txt'
 await call('devc_write', { path: scratch, content: 'alpha\nbeta\n' })

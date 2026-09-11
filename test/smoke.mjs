@@ -118,7 +118,7 @@ check('second call reuses the resident channel (fast)', exec.ms < 2000)
 
 // --- 3. read / ls ---------------------------------------------------------------------------
 const read = await run('devc_read', { path: CONFIG.containerRoot + '/go.mod', limit: 4 })
-check('read returns line-numbered content', /^\s*1\s+module shutterseek/m.test(String(read.value)))
+check('read returns line-numbered content', /^\s*1\s+module \S+/m.test(String(read.value)))
 const ls = await run('devc_ls', { path: CONFIG.containerRoot })
 check('ls lists project entries', String(ls.value).includes('go.mod'))
 

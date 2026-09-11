@@ -49,6 +49,17 @@ for (const name of withStandIn) {
   )
 }
 
+// The README was guarded against the retracted claim but the routing example was not, which
+// is how it kept a sentence saying session logs are unaffected six lines above the row that
+// isolates them.
+for (const name of examples) {
+  check(
+    `${name}: does not claim session logs stay shared`,
+    !/Session logs are unaffected/.test(body(name)),
+    'the session log root is shared by default and leaks',
+  )
+}
+
 console.log('\n-- a tools-only example registers nothing --')
 const toolsOnly = examples.filter((name) => /^\s+provideFs: false$/m.test(rowConfig(body(name))))
 check('at least one example is tools-only', toolsOnly.length > 0, String(toolsOnly.length))

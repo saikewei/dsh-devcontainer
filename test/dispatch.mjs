@@ -10,9 +10,9 @@ import { Worlds, createRoutingFileSystem, createRoutingShellExecutor } from '../
 const MOUNT_ROOT = '/Users/you/.dsh/devcontainer/root'
 const HOST_A = 'nas'
 const HOST_B = 'eu'
-const HOST_FOLDER = '/volume1/docker/ShutterSeek'
-const CONTAINER_PATH = '/workspaces/ShutterSeek'
-const CONTAINER_ROOT = '/workspaces/ShutterSeek'
+const HOST_FOLDER = '/volume1/docker/my-project'
+const CONTAINER_PATH = '/workspaces/my-project'
+const CONTAINER_ROOT = '/workspaces/my-project'
 
 let failures = 0
 const check = (label, ok, detail) => {

@@ -140,11 +140,11 @@ console.log('\npersistent channel latency:')
 await bench('ping', { op: 'ping' })
 await bench('exec: true', { op: 'exec', cmd: 'true' })
 await bench('exec: pwd', { op: 'exec', cmd: 'pwd' })
-const st = await bench('stat go.mod', { op: 'stat', path: '/workspaces/ShutterSeek/go.mod' })
+const st = await bench('stat go.mod', { op: 'stat', path: CONFIG.containerRoot + '/go.mod' })
 console.log('    ->', JSON.stringify(st))
-const ls = await bench('list project root', { op: 'list', path: '/workspaces/ShutterSeek' })
+const ls = await bench('list project root', { op: 'list', path: CONFIG.containerRoot })
 console.log(`    -> ${ls.entries?.length} entries`)
-const rd = await bench('read go.mod', { op: 'read', path: '/workspaces/ShutterSeek/go.mod' })
+const rd = await bench('read go.mod', { op: 'read', path: CONFIG.containerRoot + '/go.mod' })
 console.log(`    -> ${rd.bytes} bytes`)
 const wr = await bench('write+rename tmp', {
   op: 'write',
@@ -157,7 +157,7 @@ console.log('    ->', JSON.stringify(wr))
 const ident = await call({
   op: 'exec',
   cmd: 'echo "host=$(hostname)"; echo "in_container=$(test -f /.dockerenv && echo yes || echo no)"; go version; node -v; cat /etc/os-release | head -1',
-  cwd: '/workspaces/ShutterSeek',
+  cwd: CONFIG.containerRoot,
 })
 console.log('\ncontainer identity proof:')
 console.log(ident.stdout.trim())

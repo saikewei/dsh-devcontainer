@@ -14,9 +14,9 @@ const where = (worlds, path) => {
 }
 
 const MOUNT_ROOT = '/Users/you/.dsh/devcontainer/root'
-const MOUNT_POINT = '/Users/you/.dsh/devcontainer/ShutterSeek'
-const CONTAINER_ROOT = '/workspaces/ShutterSeek'
-const HOST_FOLDER = '/volume1/docker/ShutterSeek'
+const MOUNT_POINT = '/Users/you/.dsh/devcontainer/my-project'
+const CONTAINER_ROOT = '/workspaces/my-project'
+const HOST_FOLDER = '/volume1/docker/my-project'
 const DEFAULT_HOST = 'nas'
 // The mirror's first segment is the machine, because two machines can hold the same path.
 const MIRROR = MOUNT_ROOT + '/' + DEFAULT_HOST
@@ -43,7 +43,7 @@ check('a platform temp path stays local', where(mirrored, '/tmp/scratch') === 'l
 console.log('\n-- resolved mappings decide machine, world AND container --')
 const resolved = new Worlds({ sshHost: DEFAULT_HOST, containerRoot: CONTAINER_ROOT, mountRoot: MOUNT_ROOT })
 resolved.setResolved([
-  { localPrefix: MIRROR + HOST_FOLDER, host: 'nas', world: 'container', container: 'epic_mirzakhani', remotePath: CONTAINER_ROOT },
+  { localPrefix: MIRROR + HOST_FOLDER, host: 'nas', world: 'container', container: 'my-project-devcontainer', remotePath: CONTAINER_ROOT },
 ])
 check(
   'a mirrored workspace with a dev container resolves into it, on its own machine',
@@ -51,7 +51,7 @@ check(
 )
 check(
   'the resolver reports which container',
-  resolved.locate(MIRROR + HOST_FOLDER)?.container === 'epic_mirzakhani',
+  resolved.locate(MIRROR + HOST_FOLDER)?.container === 'my-project-devcontainer',
   String(resolved.locate(MIRROR + HOST_FOLDER)?.container),
 )
 check(

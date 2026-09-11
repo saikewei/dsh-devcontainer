@@ -89,7 +89,7 @@ const target2 = await fs.resolve(CONFIG.containerRoot + '/go.mod')
 check('container spelling resolves to the same target', String(target2.targetKey) === String(target.targetKey))
 
 const text = await fs.readText(target)
-check('readText returns container content', text.includes('module shutterseek'))
+check('readText returns container content', /^\s*module \S+/m.test(text))
 
 const info = await fs.stat(target)
 console.log('stat ->', JSON.stringify({ type: info.type, size: info.size, version: String(info.version) }))

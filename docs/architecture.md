@@ -11,14 +11,14 @@
 
 ## 2. 已探明的环境事实
 
-### 目标主机（x86_64 Linux NAS，SSH 别名 `nas`）
+### 目标主机（x86_64 Linux NAS）
 
 下表只保留**影响架构决策**的事实。侦察原记录里的机器型号、存储容量、共享服务进程数、用户与组 id 等已删除——它们不构成论据，只会暴露一台具体的私有机器。
 
 | 项目 | 值 |
 | --- | --- |
 | 系统 | Linux / x86_64 |
-| Docker | 已装（26.x + Compose v2.26），该用户**免 sudo** |
+| Docker | 已装，该用户**免 sudo** |
 | 文件共享 | SMB 可用；NFS 守护进程在跑但 **`/etc/exports` 是空模板，未配置任何 export** |
 | devcontainer CLI | **未安装** |
 
@@ -33,13 +33,13 @@
 | Features | common-utils:2, git:1, **go:1**, **node:1** |
 | 容器内身份 | `root`，Debian 12 (bookworm) |
 | 工具链 | **Go 1.25.x**、**Node v22.x**、git |
-| 额外挂载 | `/photos`(ro), `/photos_uploads`(rw), `/go`, `/home/vscode/.{codex,claude,npm}` |
+| 额外挂载 | 若干只读数据卷、一个可写上传卷，以及 `/go`、`/home/vscode/.{codex,claude,npm}` 等容器独有路径 |
 | 项目 | 一个普通 Go 项目，bind mount 自宿主的项目目录 |
 
 ### 本机（macOS）
 
 * 无 sshfs、无 macFUSE、无 FUSE 库（`brew` 可用）
-* SSH 密钥 `~/.ssh/id_ed25519`
+* 一把常见的 SSH 密钥（`~/.ssh/`）
 * 本地**没有 docker**
 
 ## 3. 生态现状：已有插件 vs. 空白
@@ -101,12 +101,12 @@
 | exec: true | 8 ms |
 | exec: pwd | 8 ms |
 | stat | 7 ms |
-| list（29 项） | 7 ms |
-| read（3289 B） | 7 ms |
+| list | 7 ms |
+| read | 7 ms |
 | write + rename | 7 ms |
 | grep 全项目往返 | 45 ms |
 | **对比：每次独立 ssh+docker exec** | **320–340 ms** |
-| 一次性建链成本 | 870 ms |
+| 一次性建链成本 | 790–870 ms（多次测量区间） |
 
 **约 42× 提升。** 传输层风险已退役。
 
@@ -138,9 +138,9 @@ devc_grep   →  func main  →  cmd/gen/main.go:14, cmd/server/main.go:29
 
 ### 已知待修项
 
-* `devc_status` 报告的 `channel` 字段是**进入函数时**的状态，首次调用会显示 `disconnected` 而实际随后连接成功——属于显示 bug。
+* `devc_status` 报告的 `channel` 字段是**进入函数时**的状态：首次调用会显示 `idle (connects on first use)`，而它随后的探针其实已经连上了。属于显示口径问题，不是连接问题。
 * helper 的 `grep`/`glob` 固定上限 250 行 / 200 路径，尚无分页。
-* 尚无客户端 UI、无工作区注册、无容器生命周期管理。
+* 当时尚无客户端 UI、无工作区注册、无容器生命周期管理。**这三项后来都已交付**：工作区选择器（`lib/client.js` + `lib/browse.js`）、`autoWorkspace` 登记，以及 `devc_containers start`。
 
 ## 8. 阶段二：已交付的插件包
 
@@ -150,30 +150,29 @@ devc_grep   →  func main  →  cmd/gen/main.go:14, cmd/server/main.go:29
 （仓库根目录 = npm 包本体）
 
 lib/
-├── index.js              插件入口：常驻通道 + 8 个 devc_* 工具 + 两种模式的装配
-├── channel.js            常驻 JSON-lines 通道
+├── index.js              插件入口：工具注册 + 两种模式的装配 + 启动诊断
+├── channel.js            常驻 JSON-lines 通道（每目标一条）
 ├── helper.mjs            容器内常驻 helper（每次连接重写）
+├── transport.js          SSH 传输：ctx.ssh 或本地 ssh 二进制
+├── hosts.js              解析 ~/.ssh/config，得到可选主机名册
+├── discover.js           文件夹 → 容器：Docker label + inspect 的 bind mount
+├── browse.js             /dsh-devcontainer 的 JSON API（config / list / prepare）
 ├── routing.js            形态 A 的路由 provider（继承 shipped 沙箱实现）
-└── search.js             路径分派的 glob/grep
-test/
-├── config.mjs            测试目标配置（环境变量 / gitignored 本地文件）
-├── boot.mjs              按 loader 的方式装载，验证 inject 解析 + 真实 registry 派发
-├── routing.mjs           路由验收测试（含本地分支无回归断言）
-├── registry.mjs          真实 dsh-tools registry 接受全部定义 + 逐工具实测
-└── smoke.mjs             替身 subprocess seam 的独立冒烟测试
+├── search.js             路径分派的 glob/grep
+└── client.js             客户端半边：工作区选择器（无构建步骤，loader bundle 格式）
+test/                     十一套：config 之外，六个无容器 + 五个需要真实容器
 tools/                    诊断工具（channel-probe、dsh-env-probe）
 examples/                 可直接复制的 profile 加载层
 docs/                     architecture.md（本文档）
 ```
 
-已安装进 `~/.dsh/profiles/web`（`dsh.profile.bundles` 现为 `[dsh-base, dsh-web-app, dsh-devcontainer]`），
-`dsh --profile web --dump-config` 确认 `devcontainer` row 正确出现在组合树中。
-**下次重启 `dsh web` 时激活。**
+安装方式是 `dsh plugin --profile <name> add dsh-devcontainer`，随后重启该 profile；bundle 自带
+composition row，但 row 里的值是**占位符**，需要按 README 的安装一节填成你自己的主机与容器。
 
 ### 交付过程中解决的两个非显然问题
 
-1. **profile 里没有 `@deepseek-ai/*`**。`~/.dsh/profiles/web/node_modules/@deepseek-ai/` 是空的——
-   官方包从 DSH 自身安装目录解析。而 `dsh plugin add <本地路径>` 装的是**符号链接**，Node ESM 又从
+1. **profile 目录里原本没有 `@deepseek-ai/*`**（后来 DSH 增加了 `$DSH_HOME/profiles/node_modules`
+   这个共享安装目录，才不成立）——当时官方包从 DSH 自身安装目录解析。而 `dsh plugin add <本地路径>` 装的是**符号链接**，Node ESM 又从
    导入文件的**真实路径**解析裸标识符，于是任何带依赖的链接插件都会解析失败。
    → 解法：让包**零运行时依赖**，工具定义直接以普通 JSON Schema 注册到 `ctx.tools`（`ToolSchema`
    就是 `{name, description, parameters}`，`parameters` 是普通 JSON Schema，与 `defineTool` 的产物同形）。
@@ -184,16 +183,17 @@ docs/                     architecture.md（本文档）
    （真实 `dsh-subprocess-local` + 真实 `dsh-tools` registry + 真实 `inject` 解析 + 真实
    `ctx.tools.execute()` 派发），在不启动任何服务的前提下取得等价证据。
 
-### 三套测试结果
+### 当时的测试结果（当时三套，现为十一套）
 
 全部通过：`boot.mjs`（激活 + registry 派发到容器）、`registry.mjs`（8 个定义被真实 registry 接受 +
-逐工具实测）、`smoke.mjs`（独立冒烟）。实测延迟：首次建链 790 ms，其后 5–40 ms/次。
+逐工具实测）、`smoke.mjs`（独立冒烟）。实测延迟：首次建链约 0.8 s，其后 5–40 ms/次。这些数字是当时那条链路（家用 NAS + Tailscale）的实测值，不代表你的环境。
 
 ### 安全语义（已在 README 明确写出）
 
 命令以容器内的用户身份运行，**本机文件沙箱管不到容器内部**——沙箱约束的是本地文件效果，
 而这些效果不在本地。容器本身及其 SSH 访问权就是能力边界。审批提示不会为容器内副作用弹出。
-参考容器挂载了 `/photos`(ro) 与 `/photos_uploads`(rw)，这一点值得用户知情。
+参考容器还挂载了几个与项目无关的卷（只读数据卷、可写上传卷），这一点值得用户知情：容器内的
+写操作同样落在这些挂载上，而本机沙箱看不到它们。
 
 ### 下一步（未做）
 
@@ -269,7 +269,7 @@ read  (file_path = 挂载点/go.mod):
 
 **没有任何 `devc_*` 前缀，也不需要向模型解释。**
 
-四套测试全绿：`boot.mjs` / `routing.mjs` / `registry.mjs` / `smoke.mjs`。
+测试全绿：`boot.mjs` / `routing.mjs` / `registry.mjs` / `smoke.mjs`。
 
 ### profile 布局（`web` 一行未改）
 

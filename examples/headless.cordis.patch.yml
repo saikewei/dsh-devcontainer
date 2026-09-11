@@ -50,11 +50,12 @@
     containerRoot: /workspaces/my-project
     hostRoot: /volume1/docker/my-project
     mountPoint: /Users/you/.dsh/devcontainer/my-project
-    # A LOCAL directory whose subtree MIRRORS the container's whole filesystem:
-    # mountRoot/workspaces/my-project stands for /workspaces/my-project. The container
-    # path is recoverable from the mount path by prefix alone, which is what lets the
-    # workspace picker offer arbitrary container directories. mountPoint stays as the
-    # explicit one-to-one pair for the primary project.
+    # A LOCAL directory whose subtree MIRRORS the HOST's whole filesystem, with the
+    # machine as the first segment: mountRoot/my-nas/volume1/docker/proj stands for
+    # /volume1/docker/proj on my-nas. Host-first, because a folder is what the picker
+    # starts from and a dev container is derived from it — the container path comes from
+    # Docker's own labels. mountPoint stays as the explicit one-to-one pair for the
+    # primary project.
     mountRoot: /Users/you/.dsh/devcontainer/root
     tools: true
     provideFs: true

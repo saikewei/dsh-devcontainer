@@ -23,8 +23,8 @@
 # paths that mean nothing without the routers. Give the profile its OWN workspace registry
 # so those paths stay here. Without this, `mountPoint`/`mountRoot` entries land in the
 # shared $DSH_HOME/storages and appear in every other profile too, where nothing routes
-# them and they open as empty directories. Session logs are unaffected: they live in the
-# shared $DSH_HOME/sessions, so every profile still sees every conversation.
+# them and they open as empty directories. The session log root leaks the same way and needs
+# the same treatment, which the next row does.
 - id: storage-json
   config:
     root: !!js dshHomePath('profiles/devcontainer/storages')
@@ -78,11 +78,12 @@
     # never sees the container). Everything beneath it runs inside the container. The plugin
     # creates it on first boot.
     mountPoint: /Users/you/.dsh/devcontainer/my-project
-    # A LOCAL directory whose subtree MIRRORS the container's whole filesystem:
-    # mountRoot/workspaces/my-project stands for /workspaces/my-project. The container
-    # path is recoverable from the mount path by prefix alone, which is what lets the
-    # workspace picker offer arbitrary container directories. mountPoint stays as the
-    # explicit one-to-one pair for the primary project.
+    # A LOCAL directory whose subtree MIRRORS the HOST's whole filesystem, with the
+    # machine as the first segment: mountRoot/my-nas/volume1/docker/proj stands for
+    # /volume1/docker/proj on my-nas. Host-first, because a folder is what the picker
+    # starts from and a dev container is derived from it — the container path comes from
+    # Docker's own labels. mountPoint stays as the explicit one-to-one pair for the
+    # primary project.
     mountRoot: /Users/you/.dsh/devcontainer/root
     # The devc_* tools stay available for container paths outside the mount point
     # (/go, /usr/local/go, /home/vscode, other mounts).

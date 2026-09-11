@@ -232,13 +232,14 @@ picker is launched only by clicking it, and cancelling it returns to the dialog 
 usable — it never ends the flow, so a cancelled attempt cannot wedge the next one. Inside the dialog
 the only way out is the one you ask for: 取消, Escape, or a picked directory.
 
-The dialog deliberately borrows the shipped directory picker's design language — the same dimensions,
-row height and type scale — and styles itself with `--dsw-alias-*` theme tokens only, so it matches
-the surrounding UI in both light and dark mode.
+The dialog deliberately borrows the shipped directory picker's design language — the same width, row
+height and type scale — and styles itself with `--dsw-alias-*` theme tokens only, so it matches the
+surrounding UI in both light and dark mode. The one deliberate difference is height: the dialog is
+520px against the shipped picker's 500px.
 
 The listing and the registration run over **plain POSIX shell**, not the resident helper, because the
-helper is a Node script and the picker must work on any machine reachable over ssh. `nas` has Node;
-`eu` does not, and both are perfectly good places to keep a project. The richer `devc_host_*` tools do
+helper is a Node script and the picker must work on any machine reachable over ssh — including one
+with no Node at all, which is still a perfectly good place to keep a project. The richer `devc_host_*` tools do
 use the helper, and say so plainly when a host has no Node rather than surfacing an `exit 127`.
 
 The picker browses the host rather than the container because that is the direction the causality
@@ -310,8 +311,8 @@ the way; `examples/web-tools-only.cordis.patch.yml` shows the configuration.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `sshHost` | `nas` | SSH destination, resolved through your own ssh config. |
-| `container` | *(empty)* | Container name or id. Empty means every call fails with a configuration error. |
+| `sshHost` | *(empty)* | SSH destination, resolved through your own ssh config. Ships empty so a fresh install cannot aim at somebody else's machine; the boot log names it until you set it. |
+| `container` | *(empty)* | Container name or id. While it is empty the eight `devc_*` tools are **not registered at all** (so `devc_status` is absent too); the `devc_host_*` tools and the picker still work, and routing mode resolves a container per workspace instead. |
 | `containerRoot` | `/` | Absolute path inside the container that paths default to. |
 | `hostRoot` | *(empty)* | The same directory as the host sees it. Reported by `devc_status` for orientation only. |
 | `mountPoint` | *(empty)* | Local directory standing for `containerRoot` — the explicit one-to-one pair that points straight at a container path. |
@@ -319,8 +320,8 @@ the way; `examples/web-tools-only.cordis.patch.yml` shows the configuration.
 | `tools` | `true` | Register the `devc_*` tools. |
 | `provideFs` | `false` | Provide the routing `ctx.fs`. Requires `fs-sandbox` disabled. |
 | `provideShell` | `false` | Provide the routing `ctx.shell`. Requires `bash-sandbox` disabled. |
-| `provideSearch` | `false` | Register path-routed `glob`/`grep`. Requires `tool-fs-search` disabled. |
-| `prompt` | `false` | Register a system-prompt section explaining the container to the model. |
+| `provideSearch` | `false` | Register path-routed `glob`/`grep`. Requires `tool-fs-search` disabled, **and** routing on — it is gated behind `provideFs`/`provideShell`. |
+| `prompt` | `false` | Register a system-prompt section explaining the container to the model. Also gated behind `provideFs`/`provideShell`. |
 | `hostTools` | `true` | Register the `devc_host_*` tools and `devc_containers`. |
 | `browseRoot` | *(hostRoot's parent)* | Where the workspace picker starts browsing on a host. |
 | `extraHosts` | `[]` | Extra SSH destinations to offer, beyond `~/.ssh/config`. |
@@ -412,8 +413,16 @@ This is an environment property, not something the plugin assumes or changes for
 
 ## Verification
 
-Every suite here is an **integration** test: it drives a real Docker dev container over a real SSH
-connection, so all of them need a live target. Point them at yours once, either way:
+The suites split in two. Six of them — `examples`, `client`, `hosts`, `browse`, `worlds`, `dispatch`
+— are **container-free**: parsers, the path/world mapping, the dispatch rules, the picker's shell
+builder, and the published guidance. They run anywhere, including CI, and need no configuration.
+
+```sh
+npm run test:unit       # the container-free six; no target required
+```
+
+The rest drive a real Docker dev container over a real SSH connection and do need a live target.
+Point them at yours once, either way:
 
 ```sh
 cp test/config.example.mjs test/config.local.mjs   # then fill it in (gitignored)
@@ -422,17 +431,18 @@ cp test/config.example.mjs test/config.local.mjs   # then fill it in (gitignored
 
 ```sh
 npm install             # devDependencies only; the plugin itself has none
-npm test                # runs all four suites below
+npm test                # all eleven suites: the six above, then the five that need a container
 node test/boot.mjs      # mounts the plugin the way the loader does, against real services
+node test/discover.mjs  # the folder -> container chain against a real Docker host
 node test/routing.mjs   # the routing providers against the real sandbox/subprocess stack
 node test/registry.mjs  # registers against the real dsh-tools registry, drives every tool
 node test/smoke.mjs     # standalone smoke test with a stand-in subprocess seam
 npm run test:channel    # latency benchmark: resident channel vs one-shot ssh docker exec
 ```
 
-`npm test` needs a live container; `node test/client.mjs` (part of it, and of `npm run test:unit`)
-does not — it guards the web dialog's re-entry and theming invariants as source assertions, since the
-app bundles its own React and hands it to plugin bundles.
+`test/client.mjs` is worth singling out even though it is one of the container-free six: it guards the
+web dialog's re-entry and theming invariants as source assertions, because the app bundles its own
+React and hands it to plugin bundles, so there is no React runtime here to render against.
 
 `routing.mjs` is the acceptance test for routing mode: it brings up the real
 `dsh-sandbox-local` / `dsh-sandbox-policy` / `dsh-subprocess-local` / `dsh-tools` stack with the
@@ -461,17 +471,23 @@ dsh --profile dcheadless "Use your bash tool with workdir <mountPoint> and comma
 
 ### Updating a running install
 
-`dsh plugin add <path>` installs a **symlink**, so there is no packaging step and no `npm pack` in the
-loop — edit the working copy and the profile already sees it. What each half then needs differs:
+`dsh plugin --profile <p> add <path>` installs a **symlink** to your checkout, so there is no packaging
+step and no `npm pack` in the loop. (Adding it by registry name instead, as the install sections do,
+copies the published package into the profile — editing a checkout then changes nothing until you
+re-add or update it. Use the path form while developing.)
+
+What each half then needs differs:
 
 * `lib/index.js`, and everything else the host loads, is read once at boot. **Restart the profile.**
-* `lib/client.js` is served from disk on every request, and its revision is a content hash of what was
-  served. A plain **page refresh** therefore picks up the new bundle — no restart, and nothing to
-  clear from the browser cache, because the new revision is a new URL.
+* `lib/client.js` is picked up by a **page refresh**. Its revision is a content hash the page embeds,
+  so a changed bundle is a new URL and the browser cache cannot serve the old one. Measured on a
+  running profile: appending a comment to the file changed both the served bytes and the revision the
+  page carried, with no restart.
 
 ## Design notes
 
-* **The package imports nothing at module scope except `node:fs/promises`** on the tools path; the
+* **The package imports no third-party module at runtime.** What it does import is Node built-ins —
+  `node:fs/promises`, `node:path`, `node:os`, `node:child_process` — on the tools path; the
   routing module additionally imports the two shipped sandboxed implementations it extends, and the
   search module imports the shipped search module for its ripgrep path.
 * **A sibling `node_modules` changes where those imports resolve.** Node resolves bare specifiers

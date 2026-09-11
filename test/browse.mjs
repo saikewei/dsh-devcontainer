@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildListCommand } from '../lib/browse.js'
+import { buildListCommand, registerContainerApi } from '../lib/browse.js'
 
 let failures = 0
 const check = (label, ok, detail) => {
@@ -61,6 +61,56 @@ try {
   }
 } finally {
   rmSync(root, { recursive: true, force: true })
+}
+
+console.log('\n-- the host a request names is checked against the roster --')
+// The HTTP routes are reachable from the page, and the `host` they accept becomes both an
+// argv element for `ssh` (where a leading `-` is parsed as an OPTION, e.g. -oProxyCommand)
+// and a path segment under the mirror (where `..` walks out, and the result is mkdir'd).
+// Neither string is an ssh alias. This is container-free: the transport is a recorder.
+let handler
+const apiCtx = {
+  get: (key) => (key === 'webServer' ? { register: (route) => { handler = route.handler; return () => {} } } : undefined),
+  effect: () => {},
+}
+const seen = []
+registerContainerApi(apiCtx, {
+  forTarget: () => ({}),
+  transportFor: (host) => ({ collect: async () => { seen.push(host); return { exitCode: 0, stdout: 'S\n', stderr: '' } } }),
+  containersFor: () => ({ resolve: async () => ({ usable: false }) }),
+  worlds: { locate: () => undefined, toMountRootPath: (host, p) => join(root, 'mirror', host, p) },
+  cfg: {
+    sshHost: 'my-nas', container: '', containerRoot: '/', hostRoot: '',
+    mountRoot: join(root, 'mirror'), browseRoot: '/',
+    sshConfigPath: join(root, 'no-such-ssh-config'), extraHosts: ['other-nas'],
+  },
+})
+
+/** One GET /list, returning the status and whether ssh was reached at all. */
+const listAs = async (host) => {
+  seen.length = 0
+  let status = null
+  const res = { writeHead: (code) => { status = code }, end: () => {}, setHeader: () => {} }
+  const url = new URL('http://x/dsh-devcontainer/list?path=/&host=' + encodeURIComponent(host))
+  await handler({ method: 'GET', url }, res)
+  return { status, ssh: [...seen] }
+}
+
+const legitimate = await listAs('my-nas')
+check('a host on the roster is accepted', legitimate.status === 200, String(legitimate.status))
+check('and reaches ssh', legitimate.ssh.length === 1, JSON.stringify(legitimate.ssh))
+
+const configured = await listAs('other-nas')
+check('an extraHosts entry is accepted too', configured.status === 200, String(configured.status))
+
+for (const [label, value] of [
+  ['an ssh option masquerading as a host', '-oProxyCommand=touch /tmp/PWNED'],
+  ['a path traversal in the host segment', '../../../../tmp/escape'],
+  ['a host nobody offered', 'somewhere-else'],
+]) {
+  const attempt = await listAs(value)
+  check(label + ' is refused', attempt.status === 400, String(attempt.status))
+  check('  and never reaches ssh', attempt.ssh.length === 0, JSON.stringify(attempt.ssh))
 }
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))

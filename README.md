@@ -106,21 +106,52 @@ A `web` profile holds the default port 3080, so both profiles can run at once on
 them moves; the patch above pins `webserver.port` to 3099 for that reason. `--port` on the command
 line still wins.
 
-### The mount point
+### The mount point and the mirror
 
 A DSH workspace must be a **real local directory** — the workspace registry canonicalizes it with
-`node:fs` `realpath`, which never sees the container, so a container path cannot be registered. The
-mount point is a local stand-in whose entire subtree stands for the container root:
+`node:fs` `realpath`, which never sees the container, so a container path cannot be registered. A
+local stand-in takes its place:
 
 ```
-/Users/you/.dsh/devcontainer/YourProject/cmd/main.go
+/Users/you/.dsh/devcontainer/ShutterSeek/cmd/main.go     (mountPoint: the primary project)
+/Users/you/.dsh/devcontainer/root/workspaces/Other/x.go  (mountRoot: anything in the container)
         ↕   (same file)
-/workspaces/YourProject/cmd/main.go
+/workspaces/ShutterSeek/cmd/main.go
+/workspaces/Other/x.go
 ```
 
 Both spellings resolve to the same target, and the tool reports the **container** path — so what the
-model reads matches what `pwd` and `go build` report from inside the container. The plugin creates
-the mount point on first boot if it is missing.
+model reads matches what `pwd` and `go build` report from inside the container. Both directories are
+created on first boot if missing.
+
+`mountPoint` is the explicit one-to-one pair for the project you configured. `mountRoot` is a subtree
+that **mirrors the container's whole filesystem**, so the container path is recoverable from the mount
+path by prefix alone:
+
+```
+mountRoot + containerPath  =  mount path
+```
+
+That is what makes the workspace picker possible — any container directory can become a workspace
+without recording a mapping anywhere. Configure either or both; routing accepts both spellings
+regardless.
+
+### Picking a workspace from the container
+
+The shipped "Add workspace" flow does not choose directories itself. It declares a **directory-flow
+hole** and asks whichever occupant is registered for one absolute host path. This plugin occupies
+both holes (the sidebar browser and the blank-session hero picker) and offers two tabs:
+
+* **本地** — delegates straight to the deployment's own directory picker, unchanged.
+* **容器** — browses the dev container itself and hands back the mirror path for the directory you
+  picked.
+
+So you can point a workspace at anything in the container, not just the project the row was
+configured with. The picker works in any profile that has the plugin; when that profile has routing
+off, it says so, because the workspace would then be an inert local stand-in.
+
+The browse API is a small JSON surface under `/dsh-devcontainer` (`config`, `list`, `prepare`) on the
+loopback web server.
 
 ## Configuration
 
@@ -130,7 +161,8 @@ the mount point on first boot if it is missing.
 | `container` | *(empty)* | Container name or id. Empty means every call fails with a configuration error. |
 | `containerRoot` | `/` | Absolute path inside the container that paths default to. |
 | `hostRoot` | *(empty)* | The same directory as the host sees it. Reported by `devc_status` for orientation only. |
-| `mountPoint` | *(empty)* | Local directory standing for `containerRoot`. Required by routing mode. |
+| `mountPoint` | *(empty)* | Local directory standing for `containerRoot` — the explicit one-to-one pair for the primary project. |
+| `mountRoot` | *(empty)* | Local directory whose subtree mirrors the container's whole filesystem, so any container directory can be addressed (and picked). |
 | `tools` | `true` | Register the `devc_*` tools. |
 | `provideFs` | `false` | Provide the routing `ctx.fs`. Requires `fs-sandbox` disabled. |
 | `provideShell` | `false` | Provide the routing `ctx.shell`. Requires `bash-sandbox` disabled. |

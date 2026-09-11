@@ -57,6 +57,12 @@
     # never sees the container). Everything beneath it runs inside the container. The plugin
     # creates it on first boot.
     mountPoint: /Users/you/.dsh/devcontainer/my-project
+    # A LOCAL directory whose subtree MIRRORS the container's whole filesystem:
+    # mountRoot/workspaces/my-project stands for /workspaces/my-project. The container
+    # path is recoverable from the mount path by prefix alone, which is what lets the
+    # workspace picker offer arbitrary container directories. mountPoint stays as the
+    # explicit one-to-one pair for the primary project.
+    mountRoot: /Users/you/.dsh/devcontainer/root
     # The devc_* tools stay available for container paths outside the mount point
     # (/go, /usr/local/go, /home/vscode, other mounts).
     tools: true

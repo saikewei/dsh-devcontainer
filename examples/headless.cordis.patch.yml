@@ -31,6 +31,12 @@
     containerRoot: /workspaces/my-project
     hostRoot: /volume1/docker/my-project
     mountPoint: /Users/you/.dsh/devcontainer/my-project
+    # A LOCAL directory whose subtree MIRRORS the container's whole filesystem:
+    # mountRoot/workspaces/my-project stands for /workspaces/my-project. The container
+    # path is recoverable from the mount path by prefix alone, which is what lets the
+    # workspace picker offer arbitrary container directories. mountPoint stays as the
+    # explicit one-to-one pair for the primary project.
+    mountRoot: /Users/you/.dsh/devcontainer/root
     tools: true
     provideFs: true
     provideShell: true

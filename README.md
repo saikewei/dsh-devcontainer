@@ -211,10 +211,19 @@ The shipped "Add workspace" flow does not choose directories itself. It declares
 hole** and asks whichever occupant is registered for one absolute host path. This plugin occupies
 both holes (the sidebar browser and the blank-session hero picker) and offers two tabs:
 
-* **本地** — delegates straight to the deployment's own directory picker, unchanged; these are
-  directories on the machine DSH runs on.
-* **远程** — picks a **machine** from the roster, browses its directories, and marks every one that
+* **远程容器** — picks a **machine** from the roster, browses its directories, and marks every one that
   carries a `.devcontainer`. Picking one resolves the whole chain and hands back the stand-in path.
+* **本机** — delegates straight to the deployment's own directory picker, unchanged; these are
+  directories on the machine DSH runs on.
+
+The dialog always opens on **远程容器**, and every interaction starts from a clean slate. The local
+picker is launched only by clicking it, and cancelling it returns to the dialog with the tab still
+usable — it never ends the flow, so a cancelled attempt cannot wedge the next one. Inside the dialog
+the only way out is the one you ask for: 取消, Escape, or a picked directory.
+
+The dialog deliberately borrows the shipped directory picker's design language — the same dimensions,
+row height and type scale — and styles itself with `--dsw-alias-*` theme tokens only, so it matches
+the surrounding UI in both light and dark mode.
 
 The listing and the registration run over **plain POSIX shell**, not the resident helper, because the
 helper is a Node script and the picker must work on any machine reachable over ssh. `nas` has Node;

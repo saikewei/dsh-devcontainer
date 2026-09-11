@@ -1,8 +1,12 @@
-// Routing acceptance test: bring up the REAL sandbox/subprocess/tools stack, mount the
-// routing providers the way the devcontainer profile does (with the shipped fs-sandbox
-// and bash-sandbox left out), and prove the harness's ORDINARY fs/shell seams operate
-// inside the container for mount-point paths while staying local — and sandboxed —
-// everywhere else.
+// Routing acceptance test: bring up the REAL sandbox/subprocess/tools stack, build the realm
+// a routed session gets, and prove the routers operate inside the container for stand-in paths
+// while staying local — and sandboxed — everywhere else.
+//
+// The shipped `fs-sandbox`/`bash-sandbox` rows are deliberately NOT mounted here, which is
+// what lets the routers take `ctx.fs`/`ctx.shell` process-wide. A real profile does mount
+// them: there the plugin leaves both seams alone and gives a routed session its own inside an
+// isolated realm. This test drives that realm's services, which is what a routed session's
+// tools use.
 import { mkdir, rm } from 'node:fs/promises'
 import { Context } from '@deepseek-ai/cordis'
 import { Worlds, createRoutingFileSystem, createRoutingShellExecutor } from '../lib/routing.js'
@@ -14,10 +18,8 @@ requireTarget('sshHost', 'container', 'containerRoot')
 
 const CONFIG = {
   ...TARGET,
-  // Routing mode: the shipped `fs-sandbox` and `bash-sandbox` are deliberately NOT mounted
-  // below, so the routers must take their seams.
+  // The `devc_*` tools are not what this suite is about; the routers are mounted directly.
   tools: false,
-  prompt: false,
 }
 
 /** A module's plugin is its default export (class or object) or the namespace itself. */

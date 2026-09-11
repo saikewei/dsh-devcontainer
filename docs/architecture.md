@@ -203,10 +203,14 @@ composition row，但 row 里的值是**占位符**，需要按 README 的安装
 
 ---
 
-## 9. 形态 A：已交付（独立 profile）
+## 9. 形态 A：已交付（单 profile）
 
 **用户提问"不能直接指定容器作为工作区吗"是整件事的转折点。** 答案是：不能，而且不是配置问题——
 而缺的那块正是这节交付的东西。
+
+> 标题里的"独立 profile"曾是必要的：形态 A 早期要在 composition 里关掉三个 row，所以必须有一套
+> 专用 profile。路由下沉到工具层之后这个前提消失了——路由按会话生效、不替换任何全局服务，因此
+> 一套 profile 就够，多的那套已合并（见附四末）。
 
 ### 侦察阶段排除的错误路径
 
@@ -414,6 +418,10 @@ read  (file_path = 挂载点/go.mod):
 * `test/dispatch.mjs` 「a path no pass has decided yet」——端到端钉死竞态：首次触碰自行判定并落进容器通道、宿主通道一次都没被问过、未判定的 shell spec 保留本地拼写、`start` 的 handle 先返回、判不出来时 fs 抛 `FS_IO_ERROR` 而 shell 回报拒绝、`glob` 既不跑本地 ripgrep 也不答 "no matches"。
 
 每条新断言都做过变异测试（改实现看断言是否变红），其中两条最初**没咬住**：反推容器根的那条用了与 `containerRoot` 相同的路径（旧行为碰巧也对），改成一个 `containerRoot: '/'` 的实例才有效；「失败不缓存」原本测的是 `#settle` 而不是 `probeCache`，补了 `probeCache` 的直接用例，并为此把它导出——没有测试的保证只是注释。
+
+### 收尾：两套 profile 合并成一套
+
+`mountRoot` 为空时插件会填默认值 `$DSH_HOME/devcontainer/root`，而 `hasStandIn` 在赋值**之后**才算——所以 `web` profile 里那段"routing stays OFF here"的注释从工具层转向那一刻起就是假的：三个 profile 解析到的是同一个镜像根，路由一直是开着的。合并时把 `mountPoint`/`mountRoot` 显式写进 `web`，删掉 `devcontainer`（备份在 `~/.dsh/backups/devcontainer-profile-merged/`），并核对了合并前后共享工作区注册表的哈希一致——同时在跑的 GUI 持有它的内存副本，任何一次写入都可能覆盖磁盘。合并后 `web` 的 row 与 `dcheadless` 逐字节相同，而后者已被四个方向的真实会话验证过。
 
 ---
 

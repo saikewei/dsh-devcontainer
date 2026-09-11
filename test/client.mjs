@@ -127,6 +127,22 @@ check(
   askLocal !== null && askLocal.includes('setLocalError(') && !askLocal.includes('onError('),
 )
 
+console.log('\n-- a profile with no stand-in keeps a working picker --')
+const rising = resets[0] ?? ''
+check(
+  'an absent container API defers instead of erroring',
+  rising.includes('delegateLocal(id)') && !rising.includes('setError(reason('),
+)
+check('the reset clears the delegation flag', rising.includes('setDelegating(false)'))
+check('nothing is drawn while the shipped chooser owns the screen', source.includes('if (!open || delegating) return null'))
+const delegated = callbackBody(source, 'delegateLocal')
+check('delegateLocal exists', delegated !== null)
+check(
+  'delegation resolves exactly one outcome',
+  delegated !== null && delegated.includes('onPicked(picked)') && delegated.includes('onCancel()'),
+)
+check('a missing local picker is reported, not swallowed', delegated !== null && delegated.includes('setError('))
+
 console.log('\n-- the promised outcome still exists --')
 check('the dialog can still be dismissed', source.includes('latest.current.onCancel()'))
 check('and the commit path still adopts a path', /onPicked\(text\(prepared\.mountPath\)\)/.test(source))

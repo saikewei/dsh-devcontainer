@@ -6,6 +6,7 @@
 // versa, and the path each channel receives is the one for its own world.
 import { Context } from '@deepseek-ai/cordis'
 import { Worlds, createRoutingFileSystem, createRoutingShellExecutor } from '../lib/routing.js'
+import { registerRoutingSearch } from '../lib/search.js'
 
 const MOUNT_ROOT = '/Users/you/.dsh/devcontainer/root'
 const HOST_A = 'nas'
@@ -178,6 +179,53 @@ container.calls.length = 0
 const run = await shell.run(containerSpec)
 check('the container spec ran on the container channel', container.last()?.cmd === 'echo hi')
 check('and reported its exit code', run.exitCode === undefined || run.exitCode !== null, JSON.stringify(run.stdout))
+
+console.log('\n-- search follows the same decision --')
+// `glob`/`grep` do not go through ctx.fs or ctx.shell, so this is the only place that proves
+// they dispatch on the world. They used to treat everything that was not `container` as
+// local, which sent a host-world folder to local ripgrep against the empty stand-in.
+// Local ripgrep must run for the local world and for nothing else, so the fake both
+// records a local spawn and refuses to be one when a remote world asked.
+const localRuns = []
+const searchCtx = {
+  subprocess: {
+    spawn(spec) {
+      localRuns.push(spec)
+      return {
+        done: Promise.resolve({ exitCode: 0 }),
+        collected: {
+          stdout: { readFrom: () => ({ text: '/tmp/a.go\n' }) },
+          stderr: { readFrom: () => ({ text: '' }) },
+        },
+      }
+    },
+  },
+  tools: { register(definition) { registered[definition.name] = definition } },
+}
+const registered = {}
+registerRoutingSearch(searchCtx, (target) => recorders[`${target.host}|${target.world}`], worlds)
+const exec = { agent: { session: { header: { cwd: '/tmp' } } } }
+
+host.calls.length = 0
+container.calls.length = 0
+await registered.glob.execute({ pattern: '**/*.go', path: MOUNT_ROOT + '/' + HOST_A + '/volume1/docker/redis' }, exec)
+check('a host-world glob asks the host channel', host.last()?.op === 'glob', JSON.stringify(host.last()))
+check('and not the container channel', container.calls.length === 0, String(container.calls.length))
+check('with the host path', host.last()?.cwd === '/volume1/docker/redis', String(host.last()?.cwd))
+
+host.calls.length = 0
+container.calls.length = 0
+await registered.grep.execute({ pattern: 'func main', path: MOUNT_ROOT + '/' + HOST_A + HOST_FOLDER }, exec)
+check('a container-world grep asks the container channel', container.last()?.op === 'grep', JSON.stringify(container.last()))
+check('and not the host channel', host.calls.length === 0, String(host.calls.length))
+
+localRuns.length = 0
+host.calls.length = 0
+container.calls.length = 0
+const localGlob = await registered.glob.execute({ pattern: '**/*.go', path: '/tmp' }, exec)
+check('a local-world glob runs local ripgrep', localRuns.length === 1, String(localRuns.length))
+check('and asks no remote channel', host.calls.length === 0 && container.calls.length === 0)
+check('and answers from it', localGlob.includes('/tmp/a.go'), localGlob)
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))
 process.exit(failures === 0 ? 0 : 1)

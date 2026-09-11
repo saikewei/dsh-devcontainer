@@ -95,6 +95,17 @@ check(
   'and does not repeat the old "sessions are unaffected" claim',
   !/Session logs are unaffected/.test(readme),
 )
+// The second trap this guard exists for: seeding the profile's registry by copying the
+// shared file "so nothing is lost" carries the other world's workspaces back in.
+check(
+  'and warns against seeding the new registry by copying',
+  /rather than copying/i.test(readme) && /workspace\.json/.test(readme),
+  'the copy-the-registry trap must be named',
+)
+check(
+  'and scopes the session move to the stand-in directories',
+  /move only the stand-in log directories/i.test(readme),
+)
 
 console.log('')
 if (failures > 0) {

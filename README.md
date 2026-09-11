@@ -284,8 +284,13 @@ prefix (`--Users-you-.dsh-devcontainer-root-…--`) into the profile's own `sess
 directories belong to local workspaces and should stay where they are.
 
 Both stores start as a copy of nothing, so a routing profile begins with an empty sidebar and an empty
-conversation list: re-add the workspaces you want there. Everything becomes per-profile, which is the
-point — the two worlds stop seeing each other's work.
+conversation list: re-add the workspaces you want there. Isolation is the point — the two worlds stop
+seeing each other's work — so **seed the new registry from nothing rather than copying
+`$DSH_HOME/storages/workspace.json` into it**. Copying is the obvious move when you want to "lose
+nothing", and it carries the other world's workspaces straight back in: the routing profile then shows
+local workspaces it has no reason to list, while the local profile correctly shows none of the
+container's. Sessions need the same treatment — move only the stand-in log directories, not the whole
+`sessions` root.
 
 The client half is worth installing in a tools-only profile precisely because it knows to stay out of
 the way; `examples/web-tools-only.cordis.patch.yml` shows the configuration.

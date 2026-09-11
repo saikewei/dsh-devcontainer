@@ -356,14 +356,83 @@ read  (file_path = 挂载点/go.mod):
 
 ---
 
+## 附四：世界判定不许猜（2026-09 竞态修复）
+
+### 故障
+
+镜像工作区里的一次性 headless 会话，`bash` 打出了 **宿主** 的主机名和 **宿主** 路径。日志显示会话确实被路由了（`session ... routed — cwd <镜像路径>`），只是世界选错了。
+
+根因是时序：`Worlds.locate()` 是**同步**的（每次 fs/shell 调用都要先知道世界；官方 `ShellExecutor.resolve` 由契约规定为同步），所以它只能读一张表；那张表由 `refreshWorlds` 在 `ctx.inject(['workspaceRegistry'])` 之后填充，并且每 10 秒重扫一次。一次性会话在首扫完成前就发起了工具调用。
+
+真正危险的不是竞态本身，而是**失败的方向**：表为空时 `locate()` 退回"镜像路径即宿主路径"的老规矩，**安静地返回宿主世界**。不报错、不告警，只是在错误的机器上执行——机器是对的，工具链和路径全错。
+
+### 修法：占位符与判定分开
+
+`locate()` 仍然同步，但对"镜像路径且尚无判定"的结果打上 `provisional: true`，明确标注**这是占位符，不是答案**。新增异步的 `Worlds.ensure(path)`：命中已有判定就直接返回；否则经 resolver 判定一次（单飞 + 缓存），再据判定结果回答；**判不出来就抛错**。
+
+各调用点的落法：
+
+* `RoutingFileSystem.resolve/lstat` 本就是 `async` —— 直接 `await ensure()`。失败翻译成 `FS_IO_ERROR`，**绝不回退到本地分支**。
+* `RoutingBashExecutor.resolve` 是同步的，不能等。未判定的 spec 保留**本地拼写**并挂一个 pending 标记，`run`/`start` 在异步侧 `await ensure()` 后再算远端路径。`start` 的 handle 仍同步返回（请求在 promise 链里发出，各访问器读到的都是"尚未落地 = running"，这是真话）。
+* `glob`/`grep` 的 `execute` 是 `async`，同样先 `await ensure()`；判不出来就明说，而不是对着空替身跑 ripgrep 然后回一句 "no matches"——那是关于它根本没看过的目录树的一个错误答案。
+* `locate()` 的其余同步调用点（`processPathFromHostPath` 的附件显示映射、picker 的展示）只关心"路径在哪"，占位符无害，保持同步。
+
+### 判定的粒度：文件夹，不是文件
+
+第一版把"被问到的路径"直接当判定单位，随即撞上第二个坑：Dev Containers 把**工作区目录**写进 `devcontainer.local_folder`，所以 `docker ps --filter label=devcontainer.local_folder=<一个文件>` 永远匹配不到，只会回答"没有容器"——又一次安静的宿主降级。
+
+于是 `DevContainers.folders()` 用**一条命令**取回整台机器的 label 索引，纯函数 `foldersContaining()` 在本地按**最长包含前缀**列出候选链；再按长度从长到短，对候选容器逐个做 `docker inspect`（按容器名缓存），取第一个真能承载该目录的——自己那个容器没把目录 bind mount 进去时，答案应该是上一级，而不是宿主。这比原先"每个工作区每 10 秒 3 条命令"更省，而且是路径级的：任意路径都能问。
+
+判定结果记录在**产生它的粒度**上：容器判定记在它 label 的那个文件夹，覆盖整棵子树；"没有容器"的判定只记在被问的那条路径上——把整个目录记成宿主会遮蔽目录里真正的 dev container 项目，那它就再也找不到了。
+
+已经记下的判定**不会被覆盖**。曾经写过"祖先判定取代后代判定"，那是错的：所有判定都出自同一份 label 索引，而 resolver 总是回答**路径上方最具体**的那个文件夹，所以更深的判定对属于它的子树只可能更准。把更深的那条丢掉，等于让嵌套项目走父容器的路径。这条规则靠 `test/worlds.mjs` 的「先决定后代、再决定祖先」顺序钉住——那正是会让错误实现看起来正确的顺序。
+
+候选链是**从长到短**逐个试的：最具体的那个文件夹可能确实有容器，但那个容器没把它 bind mount 进去（`containerPath` 为空），此时正确答案是上一级文件夹，而不是宿主——因为该路径确实落在上一级的 bind mount 里。
+
+`Worlds` 还从判定结果**反推容器根**（`#reindex()`），不再由外部单独喂入：把某条路径路由进容器、却认不出该容器自己的拼写，是一扇单向门——工具回报容器路径，模型原样传回来，而它必须能解析回去。
+
+### 顺带纠正的两条旧注释
+
+* `lib/search.js` 头部写着"调用方必须关闭随包 `tool-fs-search` row"——那是形态 A 的残留。现在这两个工具注册在 agent 作用域里遮蔽同名定义，本地会话根本不会走到它们。
+* `refreshWorlds` 从"真相来源"降级为**预热**：`ensure` 让正确性不再依赖任何一遍扫描跑完。它保留下来只买两样东西——让模型首次调用通常不必等待，以及在无人触碰时发现某个目录后来有了容器。已判为容器的目录不再重探（一条 SSH 往返只能确认既有绑定），没有容器的目录才会重问。
+
+### 验收
+
+真实 headless 会话，四个方向各跑一遍：
+
+| 会话 cwd | `bash` 结果 |
+| --- | --- |
+| 镜像工作区（有容器） | `2cd1e7193d24` / `/workspaces/ShutterSeek` / `IN_CONTAINER` |
+| 路由会话内的 `read` / `glob` | 容器内 `go.mod`、容器内 `cmd/**/*.go` |
+| 镜像目录（无容器），`workdir=` 指定 | `DX4600-73F2` / `/volume1/docker` / `NOT_CONTAINER` |
+| 本地目录 | `macbook-air.…` / 本地路径 / 无路由日志 |
+
+无容器环境里的三条防线：
+
+* `test/worlds.mjs`——`locate` 的占位符必须带 `provisional`；`ensure` 单飞、缓存、失败不缓存、无 resolver 时拒绝；判定结果反推出容器根；祖先判定不覆盖后代判定；resolver 答非所问（folder 不含所问路径）时拒绝而不是相信。
+* `test/route.mjs`（新增）——resolver 本身的规则：判定记在**文件夹**上、`--filter` 答不了的文件路径能答、嵌套取最具体、自身容器不可用时退到上一级而不是宿主、整台机器只读一次索引、问不到就抛。
+* `test/dispatch.mjs` 「a path no pass has decided yet」——端到端钉死竞态：首次触碰自行判定并落进容器通道、宿主通道一次都没被问过、未判定的 shell spec 保留本地拼写、`start` 的 handle 先返回、判不出来时 fs 抛 `FS_IO_ERROR` 而 shell 回报拒绝、`glob` 既不跑本地 ripgrep 也不答 "no matches"。
+
+每条新断言都做过变异测试（改实现看断言是否变红），其中两条最初**没咬住**：反推容器根的那条用了与 `containerRoot` 相同的路径（旧行为碰巧也对），改成一个 `containerRoot: '/'` 的实例才有效；「失败不缓存」原本测的是 `#settle` 而不是 `probeCache`，补了 `probeCache` 的直接用例，并为此把它导出——没有测试的保证只是注释。
+
+---
+
 ## 附：本次产出文件
 
 | 文件 | 说明 |
 | --- | --- |
 | `lib/` + `package.json` + `cordis.patch.yml` | **交付物**：可安装插件包（仓库根目录） |
-| `lib/routing.js` | 形态 A 的路由 provider |
-| `test/routing.mjs` | 路由验收测试（含本地分支无回归断言） |
-| `examples/*.cordis.patch.yml` | profile 加载层模板 |
+| `lib/routing.js` | 路由 provider（世界判定 + fs/shell 路由器） |
+| `lib/agent-hook.js` | 按会话在工具层挂载官方工具包（形态 A） |
+| `lib/discover.js` | dev container 发现：label 索引、容器描述、候选文件夹链 |
+| `lib/route.js` | 世界判定 resolver + 会话级分类（本地/宿主/容器） |
+| `lib/search.js` | `glob`/`grep`：容器内走通道，本地走随包 ripgrep |
+| `lib/browse.js` + `lib/client.js` | 工作区选择器（远程/本机两个选项卡） |
+| `examples/profile.cordis.patch.yml` | profile 加载层模板 |
+| `test/worlds.mjs` | 世界映射与 `ensure` 判定的单元测试 |
+| `test/route.mjs` | 世界判定 resolver 的单元测试 |
+| `test/dispatch.mjs` | 无容器的世界分发测试（含解析竞态） |
+| `test/routing.mjs` / `test/discover.mjs` / `test/smoke.mjs` | 需要真实容器的验收测试 |
 | `tools/dsh-env-probe/` | 环境探针插件（回答基类/解析/覆写面三个问题） |
 | `tools/channel-probe.mjs` | 持久化通道可行性 + 延迟基准 |
 | `docs/architecture.md` | 本文档 |

@@ -66,6 +66,8 @@ mountRoot + '/' + host + hostPath  =  替身
 
 **替身最终落在哪个世界是"判定"出来的，不是配置出来的。** 目录会拿去和 Docker 自己的 label 比对：如果某个容器由它创建，该工作区就*在那个容器内*抵达；否则走宿主。
 
+这是有确定答案的真实问题，因此绝不猜。首次碰到某个镜像目录的调用会等这个目录判定完成——一次 SSH 往返，之后缓存，并与同一棵目录树上的其他调用共享。若机器不可达，该调用**直接失败并说明原因**，而不是悄悄改在宿主上执行：机器对了，工具链和路径全错，且没有任何报错可察觉。
+
 ### 新增工作区
 
 "新增工作区"会打开一个带两个选项卡的对话框：
@@ -161,12 +163,12 @@ git config --global --add safe.directory /workspaces/your-project
 
 ## 开发
 
-十二套测试里有七套无容器，任何地方都能跑：
+十四套测试里有九套无容器，任何地方都能跑：
 
 ```sh
 npm install
 npm run test:unit       # 不需要目标
-npm test                # 全部十二套；其余需要真实 dev container
+npm test                # 全部十四套；其余需要真实 dev container
 ```
 
 把集成测试指向你的目标：`cp test/config.example.mjs test/config.local.mjs` 后填写，或使用 `DSH_DEVCONTAINER_*` 环境变量。

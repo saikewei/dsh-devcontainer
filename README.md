@@ -83,6 +83,12 @@ or both.
 Docker's own labels: if a container was created from it, the workspace is reached *inside that
 container*; if not, on the host.
 
+The lookup is a real question with a real answer, so it is never guessed. The first call that
+touches a mirrored folder waits for that folder to be decided — one SSH round trip, cached
+afterwards and shared with every other call to the same tree. If the machine cannot be reached, the
+call **fails and says so**, rather than quietly running on the host: same machine, wrong toolchain,
+wrong paths, and no error to notice.
+
 ### Adding a workspace
 
 "Add workspace" opens a dialog with two tabs:
@@ -212,12 +218,12 @@ effects. The container and your SSH access to it are the boundary.
 
 ## Development
 
-Seven of the twelve suites are container-free and run anywhere:
+Nine of the fourteen suites are container-free and run anywhere:
 
 ```sh
 npm install
 npm run test:unit       # no target required
-npm test                # all twelve; the rest need a live dev container
+npm test                # all fourteen; the rest need a live dev container
 ```
 
 Point the integration ones at your target with `cp test/config.example.mjs test/config.local.mjs`

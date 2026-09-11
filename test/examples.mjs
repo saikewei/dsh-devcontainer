@@ -35,10 +35,17 @@ check('at least one example configures a stand-in', withStandIn.length > 0, Stri
 for (const name of withStandIn) {
   const text = rowConfig(body(name))
   check(`${name}: routes the stand-in it registers`, /^\s+provideFs: true$/m.test(text), 'provideFs is not true')
+  // Two roots leak, and isolating only the first is the subtle half-failure: the workspace
+  // disappears from the other profiles while its conversation merely moves to Ungrouped.
   check(
     `${name}: keeps its registry out of the shared one`,
-    text.includes('- id: storage-json') || body(name).includes('- id: storage-json'),
+    body(name).includes('- id: storage-json'),
     'no storage-json row',
+  )
+  check(
+    `${name}: keeps its conversations out of the shared one`,
+    body(name).includes('- id: session-persistence-jsonl'),
+    'no session-persistence-jsonl row',
   )
 }
 
@@ -74,7 +81,20 @@ console.log('\n-- the isolation recipe is stated, not just implied --')
 const readme = read('README.md')
 check('the README explains the shared registry', /shared by every profile/.test(readme))
 check('and gives the storage-json row', /- id: storage-json/.test(readme) && /dshHomePath\('profiles\//.test(readme))
-check('and says session logs stay shared', /sessions.*still|still.*every conversation|shared `\$DSH_HOME\/sessions`/.test(readme))
+check(
+  'and names the second shared root',
+  /session-persistence-jsonl/.test(readme) && /Ungrouped/.test(readme),
+  'the session log root must be named, with the Ungrouped failure mode',
+)
+// The claim that isolating the registry is enough was wrong once and cost a round trip.
+check(
+  'and warns that the registry alone is not enough',
+  /only the registry is not enough|Isolating only the registry is not enough/i.test(readme),
+)
+check(
+  'and does not repeat the old "sessions are unaffected" claim',
+  !/Session logs are unaffected/.test(readme),
+)
 
 console.log('')
 if (failures > 0) {

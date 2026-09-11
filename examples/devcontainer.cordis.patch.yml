@@ -29,6 +29,16 @@
   config:
     root: !!js dshHomePath('profiles/devcontainer/storages')
 
+# The other half of the same problem. This profile's conversations live at paths that only
+# mean anything while the routers are mounted, and the session log root is shared by every
+# profile by default — so a conversation started here stayed visible in profiles that cannot
+# route it, where, trailing no workspace, it lands in the "Ungrouped" bucket. Isolate the
+# log root too, or the workspace disappears from the other profiles while the conversation
+# does not.
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('profiles/devcontainer/sessions')
+
 # Replaced by the routing filesystem provider.
 - id: fs-sandbox
   disabled: true

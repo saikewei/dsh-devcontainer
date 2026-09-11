@@ -237,7 +237,7 @@ directories, and each probe would be a round trip.
 
 The picker appears in exactly the profiles that configure a stand-in. Those are the profiles that can
 route container paths, which is the only place such a workspace means anything — see
-[Keeping container workspaces out of your other profiles](#keeping-container-workspaces-out-of-your-other-profiles).
+[Keeping the container world out of your other profiles](#keeping-the-container-world-out-of-your-other-profiles).
 
 The browse API is a small JSON surface under `/dsh-devcontainer` (`config`, `list`, `prepare`) on the
 loopback web server. It is registered whenever a stand-in is configured — and only then, because a
@@ -252,25 +252,40 @@ can render a `browse` deployment. Declining leaves the deployment's own chooser 
 if this plugin were not installed. Only a definitive `404` counts as absent; an ambiguous failure
 keeps the occupant, so a transient hiccup cannot silently remove a working picker.
 
-### Keeping container workspaces out of your other profiles
+### Keeping the container world out of your other profiles
 
 A DSH workspace has to be a real local directory, so a routing profile necessarily registers paths
 that mean nothing without the routers — `/Users/you/.dsh/devcontainer/root/nas/volume1/docker/proj`
-is a real but **empty** directory that stands for a container path. The workspace registry lives in
-`$DSH_HOME/storages/workspace.json`, which is **shared by every profile**, so such an entry also
-appears in the profiles that cannot route it, where it opens to nothing.
+is a real but **empty** directory that stands for a container path.
 
-Give each routing profile a registry of its own:
+Two roots are shared by every profile by default, and both leak:
+
+| Root | Default | What leaks |
+| --- | --- | --- |
+| `storage-json.root` | `$DSH_HOME/storages` | The workspace registry (`workspace.json`). A stand-in registered here appears in the profiles that cannot route it, where it opens to nothing. |
+| `session-persistence-jsonl.root` | `$DSH_HOME/sessions` | The session logs. A conversation started here stays visible in the profiles that cannot route it — and with no workspace left to belong to, it lands in the **Ungrouped** bucket, which is where a session goes when it trails no workspace. |
+
+Give each routing profile roots of its own:
 
 ```yaml
 - id: storage-json
   config:
     root: !!js dshHomePath('profiles/devcontainer/storages')
+
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('profiles/devcontainer/sessions')
 ```
 
-Session logs are unaffected — they live in the shared `$DSH_HOME/sessions`, so every profile still
-sees every conversation. Only the workspace list (and its projection cache) becomes per-profile, and
-a new store starts as a copy of nothing: re-add the workspaces you want in that profile.
+Isolating only the registry is not enough, and the failure is easy to miss: the workspace disappears
+from the other profiles but the conversation does not, it just moves to Ungrouped. If you have already
+been running with a shared registry, move the log directories whose names start with the stand-in path
+prefix (`--Users-you-.dsh-devcontainer-root-…--`) into the profile's own `sessions` root; the other
+directories belong to local workspaces and should stay where they are.
+
+Both stores start as a copy of nothing, so a routing profile begins with an empty sidebar and an empty
+conversation list: re-add the workspaces you want there. Everything becomes per-profile, which is the
+point — the two worlds stop seeing each other's work.
 
 The client half is worth installing in a tools-only profile precisely because it knows to stay out of
 the way; `examples/web-tools-only.cordis.patch.yml` shows the configuration.
@@ -284,7 +299,7 @@ the way; `examples/web-tools-only.cordis.patch.yml` shows the configuration.
 | `containerRoot` | `/` | Absolute path inside the container that paths default to. |
 | `hostRoot` | *(empty)* | The same directory as the host sees it. Reported by `devc_status` for orientation only. |
 | `mountPoint` | *(empty)* | Local directory standing for `containerRoot` — the explicit one-to-one pair that points straight at a container path. |
-| `mountRoot` | *(empty)* | Local directory whose subtree mirrors the **host's** whole filesystem, so any host directory can be addressed and picked. Setting either one also turns on the workspace picker; see [Keeping container workspaces out of your other profiles](#keeping-container-workspaces-out-of-your-other-profiles). |
+| `mountRoot` | *(empty)* | Local directory whose subtree mirrors the **host's** whole filesystem, so any host directory can be addressed and picked. Setting either one also turns on the workspace picker; see [Keeping the container world out of your other profiles](#keeping-the-container-world-out-of-your-other-profiles). |
 | `tools` | `true` | Register the `devc_*` tools. |
 | `provideFs` | `false` | Provide the routing `ctx.fs`. Requires `fs-sandbox` disabled. |
 | `provideShell` | `false` | Provide the routing `ctx.shell`. Requires `bash-sandbox` disabled. |

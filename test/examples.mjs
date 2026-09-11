@@ -29,69 +29,37 @@ const rowConfig = (text) => {
   return at === -1 ? '' : text.slice(at)
 }
 
-console.log('-- a stand-in only ships where it can be routed --')
-const withStandIn = examples.filter((name) => /^\s+mount(Root|Point):/m.test(rowConfig(body(name))))
-check('at least one example configures a stand-in', withStandIn.length > 0, String(withStandIn.length))
-for (const name of withStandIn) {
-  const text = rowConfig(body(name))
-  check(`${name}: routes the stand-in it registers`, /^\s+provideFs: true$/m.test(text), 'provideFs is not true')
-  // Two roots leak, and isolating only the first is the subtle half-failure: the workspace
-  // disappears from the other profiles while its conversation merely moves to Ungrouped.
-  check(
-    `${name}: keeps its registry out of the shared one`,
-    body(name).includes('- id: storage-json'),
-    'no storage-json row',
-  )
-  check(
-    `${name}: keeps its conversations out of the shared one`,
-    body(name).includes('- id: session-persistence-jsonl'),
-    'no session-persistence-jsonl row',
-  )
-}
+console.log('-- the bundle disables nothing --')
+// The whole point of routing in the tool layer: no composition row is switched off, so a profile
+// cannot be left with no filesystem when this plugin is absent. A `disabled:` anywhere in the
+// shipped patch is the foot-gun coming back.
+const patchText = read('cordis.patch.yml')
+check('the shipped patch disables no row', !/^\s*disabled:/m.test(patchText), 'a disabled row reappeared')
+const patchIds = [...patchText.matchAll(/^- id: ([\w-]+)/gm)].map((m) => m[1])
+check('and it only inserts its own row', patchIds.length === 0 || patchIds.every((id) => id === 'devcontainer'), patchIds.join(', '))
 
-// The README was guarded against the retracted claim but the routing example was not, which
-// is how it kept a sentence saying session logs are unaffected six lines above the row that
-// isolates them.
+console.log('\n-- the routing flags are gone --')
+// There is no mode to be in, so there is nothing to switch: a config key that no longer exists
+// silently does nothing, and one that reappears means the design regressed.
+const pluginSource = read('lib/index.js')
+for (const key of ['provideFs', 'provideShell', 'provideSearch']) {
+  check(`DEFAULT_CONFIG has no ${key}`, !new RegExp('^\\s*' + key + ':', 'm').test(pluginSource))
+}
+check('the shipped row carries none either', !/provide(Fs|Shell|Search):/.test(patchText))
+
+console.log('\n-- every example is the configuration, nothing else --')
 for (const name of examples) {
-  check(
-    `${name}: does not claim session logs stay shared`,
-    !/Session logs are unaffected/.test(body(name)),
-    'the session log root is shared by default and leaks',
-  )
+  const text = body(name)
+  check(`${name}: disables nothing`, !/^\s*disabled:/m.test(text))
+  check(`${name}: carries no routing flag`, !/provide(Fs|Shell|Search):/.test(text))
 }
 
-console.log('\n-- a tools-only example registers nothing --')
-const toolsOnly = examples.filter((name) => /^\s+provideFs: false$/m.test(rowConfig(body(name))))
-check('at least one example is tools-only', toolsOnly.length > 0, String(toolsOnly.length))
-for (const name of toolsOnly) {
-  check(
-    `${name}: configures no stand-in`,
-    !/^\s+mount(Root|Point):/m.test(rowConfig(body(name))),
-    'a tools-only profile must not offer the container picker',
-  )
-}
-
-console.log('\n-- the guidance the README points at actually ships --')
-const manifests = ['README.md', 'docs/architecture.md'].filter((name) => existsSync(join(root, name)))
-const referenced = new Set()
-for (const name of manifests) {
-  for (const match of read(name).matchAll(/examples\/([a-z-]+\.cordis\.patch\.yml)/g)) referenced.add(match[1])
-}
-check('the README references the examples', referenced.size > 0, String(referenced.size))
-const dangling = [...referenced].filter((name) => !examples.includes(name))
-check('every referenced example exists', dangling.length === 0, dangling.join(', '))
-
-// The other direction: an example no document points at is one nobody will find. Slimming
-// the README orphaned two of them, which is exactly the kind of loss a size edit causes.
-const orphaned = examples.filter((name) => !referenced.has(name))
-check('every example is referenced by a document', orphaned.length === 0, orphaned.join(', '))
-
-// The package publishes `files`, so an example the README cites but `files` omits is
-// invisible to anyone who installed from npm.
-const pkg = JSON.parse(read('package.json'))
-const published = pkg.files ?? []
-check('the examples are published, not just cited', published.includes('examples'), published.join(', '))
-check('the docs are published, not just cited', published.includes('docs') || !existsSync(join(root, 'docs')), published.join(', '))
+console.log('\n-- the README states the two guarantees --')
+const mainReadme = read('README.md')
+check('routing is described as per session', /per session/i.test(mainReadme))
+check('and a local session is described as untouched', /not reached|never reaches the routing code/i.test(mainReadme), 'the local-untouched guarantee must be stated')
+check('and nothing global is said to be replaced', /[Nn]othing global is replaced|[Nn]othing here is disabled/i.test(mainReadme))
+check('the isolation recipe is gone', !/shared by every profile|storage-json/.test(mainReadme), 'the retracted isolation recipe is still documented')
 
 console.log('\n-- the shipped bundle carries no operator\'s own target --')
 // `dsh plugin add dsh-devcontainer` installs this patch verbatim, so anything filled in here
@@ -129,36 +97,6 @@ for (const name of ['README.md', 'README.zh.md']) {
   const undocumented = registered.filter((tool) => !text.includes(tool))
   check(`none is missing from ${name}`, undocumented.length === 0, undocumented.join(', '))
 }
-
-console.log('\n-- the isolation recipe is stated, not just implied --')
-const readme = read('README.md')
-check('the README explains the shared registry', /shared by every profile/.test(readme))
-check('and gives the storage-json row', /- id: storage-json/.test(readme) && /dshHomePath\('profiles\//.test(readme))
-check(
-  'and names the second shared root',
-  /session-persistence-jsonl/.test(readme) && /Ungrouped/.test(readme),
-  'the session log root must be named, with the Ungrouped failure mode',
-)
-// The claim that isolating the registry is enough was wrong once and cost a round trip.
-check(
-  'and warns that the registry alone is not enough',
-  /only the registry is not enough|Isolating only the registry is not enough/i.test(readme),
-)
-check(
-  'and does not repeat the old "sessions are unaffected" claim',
-  !/Session logs are unaffected/.test(readme),
-)
-// The second trap this guard exists for: seeding the profile's registry by copying the
-// shared file "so nothing is lost" carries the other world's workspaces back in.
-check(
-  'and warns against seeding the new registry by copying',
-  /rather than copying/i.test(readme) && /workspace\.json/.test(readme),
-  'the copy-the-registry trap must be named',
-)
-check(
-  'and scopes the session move to the stand-in directories',
-  /move only the stand-in log directories/i.test(readme),
-)
 
 console.log('')
 if (failures > 0) {

@@ -321,6 +321,41 @@ read  (file_path = 挂载点/go.mod):
 
 ---
 
+## 附三：路由下沉到工具层（2026-09 架构转向）
+
+早期形态 A 用 `RoutingFileSystem`/`RoutingBashExecutor` 替换宿主的 `ctx.fs`/`ctx.shell`，代价是必须在 composition 里关闭 `fs-sandbox`/`bash-sandbox`/`tool-fs-search` 三个 row。这让插件变成**启动路径上的必经环节**：只要插件不在（或用户显式禁用了它自己的 row），profile 就**没有文件系统**，harness 起不来。
+
+### 为什么"替换服务"这条路在设计上就是死的
+
+三条源码事实，逐条实测过：
+
+1. **`provide()` 拒绝二次注册**：`if (this.store[key]) throw new Error('service "..." has been registered at <...>')`。
+2. **`set()` 要求同一 fiber**：`if (impl.fiber !== this.ctx.fiber) throw ...` —— 无法跨插件改写别人的服务。
+3. **patch 不能改 row 的 `name`**：`applyEntryPatches` 把 `name` 解构成**校验守卫**（不一致就 skip），不是可覆盖字段。所以"让 `fs-sandbox` 这一行自己加载路由实现"也不可行。
+
+`isolate()` 同样救不了：官方工具注册在根作用域，服务解析不随 `agent.ctx` 隔离。
+
+### 最终形态：按会话、在工具层
+
+监听 `agent/created`；仅当 `agent.session.header.cwd` 落在镜像下时，在该 agent 的作用域下建一个**隔离领域** `agent.ctx.isolate('fs').isolate('shell')`，把**官方** `dsh-tool-fs` 与 `dsh-tool-bash` 挂进去——它们的 `ctx.fs`/`ctx.shell` 就是路由器。领域仍携带 agent 的 scope key（`isolate` 与 `createScope` 都是 `extend()`），因此它们的注册落进**该会话的工具层**并遮蔽全局定义。
+
+于是：本地会话在任何注册之前 return（**结构性**保证，不是承诺）；不替换任何全局服务；不关闭任何 row；卸载即恢复。`@dsh-ssh/dsh-ssh` 是同一形态的生产先例，本实现照其配方。
+
+`glob`/`grep` 仍归本插件：随包搜索工具经 `ctx.subprocess` 启动打包的本地 ripgrep，**任何领域都改不了它**。
+
+### 代价（刻意接受）
+
+只有那七个工具被路由。侧边栏文件浏览器（`dsh-api-workspace-files`）、技能发现（`dsh-skill-filesystem`）、`present`、`str_replace_editor` 等十多个直接读 `ctx.fs` 的消费者，对镜像工作区看到的仍是本地替身。这是"永不替换全局服务"的对价；容器内可达性由 `devc_*` 工具补足。
+
+### 踩过的坑（供后来者）
+
+* **测试里必须用同一份 `dsh-scope`**。`kScope = Symbol("dsh.scope")` 是模块内符号；npm 树与 npx 缓存各一份时，`createScope` 写进去的符号与 `dsh-tools` 读的不是同一个，scope 永远读成 `undefined`，注册静默落到全局层。这个假阴性花了很久才定位。
+* **`agent/created` 是 emit**，handler 同步抛错会**否决 agent 发布**。全程 try/catch，日志代替报错。
+* **被遮蔽的 `bash` 需要 job controller**：官方 `tool-bash` 只调 `ctx.jobs.start`，controller 由 `tool-jobs` 附加；preset 未装它时 `run_in_background` 会抛 "no job controller serves this agent"，需在 agent 作用域补 `jobs.attachController`。
+* **官方工具包必须进仓库的 devDependencies**：profile 里插件是符号链接，Node 从真实路径解析 `@deepseek-ai/*`，因此运行时能解析的只有仓库 `node_modules` 里有的那些。
+
+---
+
 ## 附：本次产出文件
 
 | 文件 | 说明 |

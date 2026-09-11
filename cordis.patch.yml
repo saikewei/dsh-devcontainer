@@ -4,11 +4,11 @@
 # the profile's node_modules, so `dsh plugin add dsh-devcontainer` is the whole
 # installation: package plus row, nothing to hand-edit.
 #
-# These are the TOOLS-ONLY defaults: the devc_* tools are registered and nothing in
-# the harness changes. To also route the ordinary bash/read/write/edit/glob/grep seams
-# into the container, a profile overrides this row (see README "Routing mode") with
-# `provideFs`/`provideShell`/`mountPoint` and disables the `fs-sandbox` and
-# `bash-sandbox` rows, which the routers replace.
+# This one row is the whole installation. Routing is per SESSION and lives in the tool
+# layer: a workspace under the mirror gets the harness's ordinary bash/read/write/edit/
+# glob/grep routed into the container, and a session whose cwd is local is not reached at
+# all. Nothing global is replaced and NO row is disabled — which is why there is no
+# separate profile to keep and no `disabled:` anywhere below.
 #
 # Address the row by id (`devcontainer`) from your profile cordis.patch.yml to
 # override any of its config values; a patch replaces the whole `config` object,
@@ -32,11 +32,11 @@
         containerRoot: '/'
         # The same directory as the host sees it, when it is a bind mount. Informational.
         hostRoot: ''
-        # A LOCAL directory standing for the container root; configuring it is what enables
-        # the workspace picker. Routing mode adds `provideFs`/`provideShell` and disables
-        # `fs-sandbox`/`bash-sandbox` — see README "Routing mode".
+        # The explicit one-to-one pair for the primary project. Optional: `mountRoot` below
+        # already reaches the same files through the host path.
         mountPoint: ''
+        # Optional. Empty means `$DSH_HOME/devcontainer/root`, the local subtree standing in
+        # for the host's filesystem; that default is why a fresh install configures no
+        # stand-in of its own.
+        mountRoot: ''
         tools: true
-        provideFs: false
-        provideShell: false
-        prompt: false

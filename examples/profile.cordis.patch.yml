@@ -1,0 +1,36 @@
+# The only thing a profile has to supply.
+#
+# Routing needs no profile of its own and no disabled rows: installing the bundle is the whole
+# installation, and the plugin routes per SESSION — a workspace under the mirror is served by the
+# container, a local workspace is not touched at all. What it cannot know is which machine and
+# container are yours, so that is what goes here.
+#
+#   dsh plugin --profile web add dsh-devcontainer
+#   $EDITOR ~/.dsh/profiles/web/cordis.patch.yml     # paste the block below, fill it in
+#   # restart the profile
+#
+# A patch replaces the whole `config` object, so restate every key you need rather than only the
+# one you are changing. The boot log names any key still missing.
+
+- id: devcontainer
+  config:
+    # An alias from your own ~/.ssh/config. OpenSSH resolves the identity file, port and jump
+    # hosts for it, so nothing here needs to know about them.
+    sshHost: my-nas
+    # Container name or id on that host. It must already be running; this plugin attaches to a
+    # container, it does not build one.
+    container: my-project-devcontainer
+    # Absolute path inside the container that tools and routed paths default to.
+    containerRoot: /workspaces/my-project
+    # The same directory as the host sees it, when it is a bind mount. Informational.
+    hostRoot: /volume1/docker/my-project
+    # Everything below is optional. `mountRoot` defaults to `$DSH_HOME/devcontainer/root`, the
+    # local subtree that stands in for the host's filesystem — that default is why a fresh
+    # install works without configuring a stand-in.
+    #
+    # mountRoot: /Users/you/.dsh/devcontainer/root
+    #
+    # The explicit one-to-one pair for a project configured up front. The mirror already reaches
+    # the same files through the host path; this addresses the container's own spelling directly.
+    #
+    # mountPoint: /Users/you/.dsh/devcontainer/my-project

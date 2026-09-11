@@ -351,6 +351,10 @@ node test/smoke.mjs     # standalone smoke test with a stand-in subprocess seam
 npm run test:channel    # latency benchmark: resident channel vs one-shot ssh docker exec
 ```
 
+`npm test` needs a live container; `node test/client.mjs` (part of it, and of `npm run test:unit`)
+does not — it guards the web dialog's re-entry and theming invariants as source assertions, since the
+app bundles its own React and hands it to plugin bundles.
+
 `routing.mjs` is the acceptance test for routing mode: it brings up the real
 `dsh-sandbox-local` / `dsh-sandbox-policy` / `dsh-subprocess-local` / `dsh-tools` stack with the
 shipped `fs-sandbox` and `bash-sandbox` deliberately absent, mounts the routers, and then drives the
@@ -375,6 +379,16 @@ dsh --profile dcheadless "Use your bash tool with workdir <mountPoint> and comma
   'hostname; test -f /.dockerenv && echo IN_CONTAINER; pwd'. Then read <mountPoint>/go.mod. \
   Report both outputs verbatim."
 ```
+
+### Updating a running install
+
+`dsh plugin add <path>` installs a **symlink**, so there is no packaging step and no `npm pack` in the
+loop — edit the working copy and the profile already sees it. What each half then needs differs:
+
+* `lib/index.js`, and everything else the host loads, is read once at boot. **Restart the profile.**
+* `lib/client.js` is served from disk on every request, and its revision is a content hash of what was
+  served. A plain **page refresh** therefore picks up the new bundle — no restart, and nothing to
+  clear from the browser cache, because the new revision is a new URL.
 
 ## Design notes
 

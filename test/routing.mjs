@@ -73,12 +73,15 @@ const mount = (rel) => CONFIG.mountPoint + (rel === undefined ? '' : '/' + rel)
 console.log('\n-- ctx.fs: container world via the mount point --')
 const target = await fs.resolve(mount('go.mod'))
 console.log('resolve(mount/go.mod) ->', JSON.stringify({ key: String(target.targetKey), display: target.displayPath }))
-// A target key carries its world, because the same path exists on the host and in the
-// container: `/etc/hosts` is a different file in each.
+// A target key carries its host AND its world, because the same path exists on several
+// machines and in the container on each: `/etc/hosts` is a different file everywhere.
 const KEY_SEP = String.fromCharCode(0)
-const worldOf = (t) => String(t.targetKey).split(KEY_SEP)[0]
+const tagOf = (t) => String(t.targetKey).split(KEY_SEP)[0].split('|')
+const hostOf = (t) => tagOf(t)[0]
+const worldOf = (t) => tagOf(t)[1]
 const pathOf = (t) => String(t.targetKey).split(KEY_SEP).slice(1).join(KEY_SEP)
 check('the mount-point spelling resolves into the container world', worldOf(target) === 'container', worldOf(target))
+check('on the configured host', hostOf(target) === CONFIG.sshHost, hostOf(target))
 check('and names the container path', pathOf(target) === CONFIG.containerRoot + '/go.mod', pathOf(target))
 check('the display path is the container path, not the stand-in', target.displayPath === CONFIG.containerRoot + '/go.mod')
 

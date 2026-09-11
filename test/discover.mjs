@@ -19,7 +19,8 @@ const check = (label, ok, detail) => {
   if (!ok) failures++
 }
 
-const transport = new RemoteTransport({ get: () => undefined }, CONFIG)
+// One transport reaches one machine: (ctx, host, the host ctx.ssh owns).
+const transport = new RemoteTransport({ get: () => undefined }, CONFIG.sshHost, CONFIG.sshHost)
 const containers = new DevContainers(transport)
 
 console.log('-- transport --')

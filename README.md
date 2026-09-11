@@ -155,28 +155,32 @@ A `web` profile holds the default port 3080, so both profiles can run at once on
 them moves; the patch above pins `webserver.port` to 3099 for that reason. `--port` on the command
 line still wins.
 
-### Three worlds: local, host, container
+### Three worlds, and any number of machines
 
 A DSH workspace must be a **real local directory** — the workspace registry canonicalizes it with
 `node:fs` `realpath`, which never sees the remote machine. Local stand-ins take its place, and a path
 resolves to one of three worlds:
 
 ```
-/Users/you/.dsh/devcontainer/root/volume1/docker/ShutterSeek/x.go   (mountRoot: a HOST directory)
-/Users/you/.dsh/devcontainer/ShutterSeek/x.go                       (mountPoint: the project)
+/Users/you/.dsh/devcontainer/root/nas/volume1/docker/ShutterSeek/x.go   (mountRoot: host `nas`)
+/Users/you/.dsh/devcontainer/ShutterSeek/x.go                          (mountPoint: the project)
         ↕
-        /volume1/docker/ShutterSeek/x.go                            (the host)
+        nas:/volume1/docker/ShutterSeek/x.go                           (the host)
         ↕  bind mount, discovered from Docker
-        /workspaces/ShutterSeek/x.go                                (the container)
+        /workspaces/ShutterSeek/x.go                                   (the container)
 ```
 
-`mountRoot` is a subtree that **mirrors the host's whole filesystem**, so the host path is recoverable
-from the stand-in by prefix alone — which is what lets any host directory become a workspace without
-recording a mapping anywhere:
+`mountRoot` is a subtree that **mirrors every reachable machine's filesystem**, with the MACHINE as the
+first segment, so both the host and the path are recoverable from the stand-in by prefix alone — which
+is what lets any directory on any configured host become a workspace without recording a mapping
+anywhere:
 
 ```
-mountRoot + hostPath  =  stand-in
+mountRoot + '/' + host + hostPath  =  stand-in
 ```
+
+The machine has to be in there: several machines can hold the same path, and `/etc/hosts` is a
+different file on each of them.
 
 `mountPoint` is the explicit one-to-one pair that points straight at a container path, for a project
 you configured up front. Configure either or both.
@@ -190,7 +194,18 @@ A target key therefore carries its world (`host:<path>` / `container:<path>`): t
 both machines, and `/etc/hosts` is a different file in each. Containment is only meaningful within one
 world.
 
-### Picking a workspace from the host
+### Which machines are on offer
+
+The list is the operator's own `~/.ssh/config`, read on the machine DSH runs on. Its `Host` aliases
+become the picker's machine selector; wildcard and negation patterns (`Host *`, `Host *.example.com`)
+are skipped because they name no concrete machine. `extraHosts` adds destinations that are not in the
+file, and `sshHost` is always selectable even when it appears in neither — an alias can also be a bare
+hostname or an address.
+
+Nothing here needs to understand key material: when a command runs, OpenSSH itself resolves the alias,
+identity file, port and jump hosts it was configured with.
+
+### Picking a workspace from a host
 
 The shipped "Add workspace" flow does not choose directories itself. It declares a **directory-flow
 hole** and asks whichever occupant is registered for one absolute host path. This plugin occupies
@@ -198,8 +213,13 @@ both holes (the sidebar browser and the blank-session hero picker) and offers tw
 
 * **本地** — delegates straight to the deployment's own directory picker, unchanged; these are
   directories on the machine DSH runs on.
-* **远程** — browses the **host** the dev container runs on, marking every directory that carries a
-  `.devcontainer`. Picking one resolves the whole chain and hands back the stand-in path.
+* **远程** — picks a **machine** from the roster, browses its directories, and marks every one that
+  carries a `.devcontainer`. Picking one resolves the whole chain and hands back the stand-in path.
+
+The listing and the registration run over **plain POSIX shell**, not the resident helper, because the
+helper is a Node script and the picker must work on any machine reachable over ssh. `nas` has Node;
+`eu` does not, and both are perfectly good places to keep a project. The richer `devc_host_*` tools do
+use the helper, and say so plainly when a host has no Node rather than surfacing an `exit 127`.
 
 The picker browses the host rather than the container because that is the direction the causality
 runs: the folder is the project, and a dev container is an execution environment derived from it. The
@@ -231,7 +251,9 @@ the dialog states that a workspace registered there will be an inert local stand
 | `provideSearch` | `false` | Register path-routed `glob`/`grep`. Requires `tool-fs-search` disabled. |
 | `prompt` | `false` | Register a system-prompt section explaining the container to the model. |
 | `hostTools` | `true` | Register the `devc_host_*` tools and `devc_containers`. |
-| `browseRoot` | *(hostRoot's parent)* | Where the workspace picker starts browsing on the host. |
+| `browseRoot` | *(hostRoot's parent)* | Where the workspace picker starts browsing on a host. |
+| `extraHosts` | `[]` | Extra SSH destinations to offer, beyond `~/.ssh/config`. |
+| `sshConfigPath` | *(empty)* | The ssh_config file to read. Empty means `~/.ssh/config`. |
 | `autoWorkspace` | `false` | Register the mount point as a workspace on boot. |
 | `workspaceTitle` | *(container root basename)* | Display title for the auto-registered workspace. |
 | `defaultTimeoutMs` | `120000` | Per-command ceiling when the caller states none. |

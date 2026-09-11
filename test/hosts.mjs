@@ -55,6 +55,28 @@ check('a `Key=Value` line is accepted', (() => {
 })(), JSON.stringify(parseSshConfig('Host a\n  HostName=h.example')))
 check('directives before any Host block are ignored', parseSshConfig('User global\nHost a').length === 1)
 
+console.log('\n-- a Match block ends the block that was open --')
+// `Match` names a CONDITION, not a machine. Its directives are conditional and this parser
+// does not evaluate the condition, so the only safe reading is to apply none of them — they
+// used to land on whichever `Host` came before, and the picker then showed that machine under
+// the wrong user and port.
+const withMatch = parseSshConfig([
+  'Host nas',
+  '  HostName 192.0.2.10',
+  '',
+  'Match host other',
+  '  User conditional',
+  '  Port 2222',
+  '',
+  'Host wsl',
+  '  HostName 198.51.100.27',
+].join('\n'))
+check('no conditional directive reaches the block before it', JSON.stringify(withMatch[0]) === JSON.stringify({ alias: 'nas', hostName: '192.0.2.10' }), JSON.stringify(withMatch[0]))
+check('and the block after it still parses', withMatch[1]?.hostName === '198.51.100.27', JSON.stringify(withMatch[1]))
+check('a Match block adds no alias of its own', aliases('Host a\nMatch host b\n  User u').join(',') === 'a', aliases('Host a\nMatch host b\n  User u').join(','))
+const matchFirst = parseSshConfig('Match host x\n  User u\nHost a\n  HostName 192.0.2.1')
+check('a Match before the first Host does not leak forward either', JSON.stringify(matchFirst) === JSON.stringify([{ alias: 'a', hostName: '192.0.2.1' }]), JSON.stringify(matchFirst))
+
 console.log('\n-- the operator\'s own file, when there is one --')
 const { readFile } = await import('node:fs/promises')
 const { homedir } = await import('node:os')

@@ -9,5 +9,5 @@
 #
 # `npm run test:unit` fails when these hashes no longer match the files, so drift is caught
 # by the suite rather than by a reader who happens to notice.
-README.md: 75eec31fa2cd9e50db482596fc98757ae87549ae
-README.zh.md: cb9ff6af8da9ab4e419fc7705b9e31b52ae081a1
+README.md: b83fa9c7bb0ad341329cd8598c95e06fd94eec2d
+README.zh.md: fa328637b5a8333998dc80720e5ee01ae93f7ac4

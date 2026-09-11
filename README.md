@@ -218,12 +218,12 @@ effects. The container and your SSH access to it are the boundary.
 
 ## Development
 
-Nine of the fourteen suites are container-free and run anywhere:
+Ten of the fifteen suites are container-free and run anywhere:
 
 ```sh
 npm install
 npm run test:unit       # no target required
-npm test                # all fourteen; the rest need a live dev container
+npm test                # all fifteen; the rest need a live dev container
 ```
 
 Point the integration ones at your target with `cp test/config.example.mjs test/config.local.mjs`

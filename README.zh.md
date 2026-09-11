@@ -163,12 +163,12 @@ git config --global --add safe.directory /workspaces/your-project
 
 ## 开发
 
-十四套测试里有九套无容器，任何地方都能跑：
+十五套测试里有十套无容器，任何地方都能跑：
 
 ```sh
 npm install
 npm run test:unit       # 不需要目标
-npm test                # 全部十四套；其余需要真实 dev container
+npm test                # 全部十五套；其余需要真实 dev container
 ```
 
 把集成测试指向你的目标：`cp test/config.example.mjs test/config.local.mjs` 后填写，或使用 `DSH_DEVCONTAINER_*` 环境变量。

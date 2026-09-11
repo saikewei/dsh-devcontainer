@@ -74,7 +74,7 @@ const apiCtx = {
   effect: () => {},
 }
 const seen = []
-registerContainerApi(apiCtx, {
+const deps = {
   forTarget: () => ({}),
   transportFor: (host) => ({ collect: async () => { seen.push(host); return { exitCode: 0, stdout: 'S\n', stderr: '' } } }),
   containersFor: () => ({ resolve: async () => ({ usable: false }) }),
@@ -84,16 +84,22 @@ registerContainerApi(apiCtx, {
     mountRoot: join(root, 'mirror'), browseRoot: '/',
     sshConfigPath: join(root, 'no-such-ssh-config'), extraHosts: ['other-nas'],
   },
-})
+}
+registerContainerApi(apiCtx, deps)
 
-/** One GET /list, returning the status and whether ssh was reached at all. */
+/** One GET /list, returning the status, the body, and whether ssh was reached at all. */
 const listAs = async (host) => {
   seen.length = 0
   let status = null
-  const res = { writeHead: (code) => { status = code }, end: () => {}, setHeader: () => {} }
+  let body = ''
+  const res = {
+    writeHead: (code) => { status = code },
+    end: (text) => { body = String(text ?? '') },
+    setHeader: () => {},
+  }
   const url = new URL('http://x/dsh-devcontainer/list?path=/&host=' + encodeURIComponent(host))
   await handler({ method: 'GET', url }, res)
-  return { status, ssh: [...seen] }
+  return { status, body, ssh: [...seen] }
 }
 
 const legitimate = await listAs('my-nas')
@@ -112,6 +118,38 @@ for (const [label, value] of [
   check(label + ' is refused', attempt.status === 400, String(attempt.status))
   check('  and never reaches ssh', attempt.ssh.length === 0, JSON.stringify(attempt.ssh))
 }
+
+console.log('\n-- a listing that could not run is not an empty directory --')
+// ssh failed: unreachable machine, rejected key, no route. Rendering that as an empty listing
+// told the operator "nothing here" about a machine the picker never reached, so a failure read
+// as an answer. exit 3 stays a 404 — that one IS an answer ("no such directory").
+const unreachable = { exitCode: 255, stdout: '', stderr: 'ssh: connect to host my-nas port 22: Operation timed out' }
+registerContainerApi(apiCtx, {
+  ...deps,
+  transportFor: () => ({ collect: async () => unreachable }),
+})
+const failed = await listAs('my-nas')
+check('a failed ssh is reported as a failure', failed.status === 502, String(failed.status))
+check('with what ssh said', failed.body.includes('Operation timed out'), failed.body)
+check('and NOT as an empty listing', failed.body.includes('error') && !failed.body.includes('"entries"'), failed.body)
+
+const quietFailure = { exitCode: 255, stdout: '', stderr: '   ' }
+registerContainerApi(apiCtx, { ...deps, transportFor: () => ({ collect: async () => quietFailure }) })
+const quiet = await listAs('my-nas')
+check('an ssh failure with no stderr still says something', quiet.status === 502 && quiet.body.includes('exit 255'), quiet.body)
+
+const noExit = { exitCode: null, stdout: '', stderr: 'no sshHost configured' }
+registerContainerApi(apiCtx, { ...deps, transportFor: () => ({ collect: async () => noExit }) })
+const never = await listAs('my-nas')
+check('a command that never ran is reported too', never.status === 502 && never.body.includes('no sshHost configured'), never.body)
+
+registerContainerApi(apiCtx, { ...deps, transportFor: () => ({ collect: async () => ({ exitCode: 3, stdout: '', stderr: '' }) }) })
+const absent = await listAs('my-nas')
+check('exit 3 stays "no such directory"', absent.status === 404, String(absent.status))
+
+registerContainerApi(apiCtx, deps)
+const healthy = await listAs('my-nas')
+check('and a working listing is still a listing', healthy.status === 200, String(healthy.status))
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))
 process.exit(failures === 0 ? 0 : 1)

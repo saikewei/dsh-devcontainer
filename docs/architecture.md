@@ -429,7 +429,9 @@ read  (file_path = 挂载点/go.mod):
 | `lib/search.js` | `glob`/`grep`：容器内走通道，本地走随包 ripgrep |
 | `lib/browse.js` + `lib/client.js` | 工作区选择器（远程/本机两个选项卡） |
 | `examples/profile.cordis.patch.yml` | profile 加载层模板 |
+| `lib/channel.js` | 常驻 helper 通道：帧协议、握手校验、终态清理 |
 | `test/worlds.mjs` | 世界映射与 `ensure` 判定的单元测试 |
+| `test/channel.mjs` | 通道帧协议与终态路径的单元测试（伪 transport） |
 | `test/route.mjs` | 世界判定 resolver 的单元测试 |
 | `test/dispatch.mjs` | 无容器的世界分发测试（含解析竞态） |
 | `test/routing.mjs` / `test/discover.mjs` / `test/smoke.mjs` | 需要真实容器的验收测试 |

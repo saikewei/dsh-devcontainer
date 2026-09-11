@@ -12,18 +12,20 @@ const check = (label, ok, detail) => {
 const aliases = (text) => parseSshConfig(text).map((entry) => entry.alias)
 
 console.log('-- a plain roster --')
+// Documentation addresses (RFC 5737) and a throwaway username: a fixture that carried a real
+// tailnet address and a real login would publish one operator's network to everybody.
 const plain = parseSshConfig([
   'Host nas',
-  '  HostName 100.90.232.17',
-  '  User saikewei',
+  '  HostName 192.0.2.10',
+  '  User operator',
   '',
   'Host wsl',
-  '  HostName 100.117.139.27',
-  '  User saikewei',
+  '  HostName 198.51.100.27',
+  '  User operator',
   '  Port 52222',
 ].join('\n'))
 check('every alias is listed in file order', JSON.stringify(aliases('Host a\nHost b')) === '["a","b"]', JSON.stringify(aliases('Host a\nHost b')))
-check('a block keeps its hostname, user and port', JSON.stringify(plain[1]) === JSON.stringify({ alias: 'wsl', hostName: '100.117.139.27', user: 'saikewei', port: '52222' }), JSON.stringify(plain[1]))
+check('a block keeps its hostname, user and port', JSON.stringify(plain[1]) === JSON.stringify({ alias: 'wsl', hostName: '198.51.100.27', user: 'operator', port: '52222' }), JSON.stringify(plain[1]))
 check('a block without a port leaves it undefined', plain[0].port === undefined, String(plain[0].port))
 
 console.log('\n-- what is deliberately not offered --')

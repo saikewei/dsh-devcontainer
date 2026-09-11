@@ -77,6 +77,38 @@ const published = pkg.files ?? []
 check('the examples are published, not just cited', published.includes('examples'), published.join(', '))
 check('the docs are published, not just cited', published.includes('docs') || !existsSync(join(root, 'docs')), published.join(', '))
 
+console.log('\n-- the shipped bundle carries no operator\'s own target --')
+// `dsh plugin add dsh-devcontainer` installs this patch verbatim, so anything filled in here
+// becomes everybody's default. A host alias, container name or project path that belongs to
+// one machine is both wrong for every other installation and a leak of that machine.
+const shipped = read('cordis.patch.yml')
+const shippedConfig = Object.fromEntries(
+  [...shipped.matchAll(/^ {8}([a-zA-Z]+):[ \t]*(.*)$/gm)].map((m) => [m[1], m[2].trim()]),
+)
+check('the shipped row declares its config', Object.keys(shippedConfig).length >= 5, JSON.stringify(shippedConfig))
+for (const key of ['sshHost', 'container', 'hostRoot', 'mountPoint']) {
+  check(`${key} ships empty rather than pointing somewhere`, shippedConfig[key] === "''", String(shippedConfig[key]))
+}
+check('containerRoot ships as the container root', shippedConfig.containerRoot === "'/'", String(shippedConfig.containerRoot))
+
+// The in-code default matters just as much: it is what an override that omits the key gets.
+const source = read('lib/index.js')
+check(
+  'DEFAULT_CONFIG leaves sshHost empty too',
+  /const DEFAULT_CONFIG = \{[\s\S]*?\n {2}sshHost: '',/.test(source),
+  'a plausible-looking default would aim a new installation at somebody else',
+)
+
+console.log('\n-- every tool the plugin registers is documented --')
+// An undocumented tool is invisible: the operator cannot know it exists, and the model is
+// told about it only by its own schema. This caught the five devc_host_* tools, which were
+// named in passing but described nowhere.
+const registered = [...new Set([...source.matchAll(/name: '(devc_[a-z_]+)'/g)].map((m) => m[1]))]
+check('the plugin registers tools', registered.length >= 8, String(registered.length))
+const readmeText = read('README.md')
+const undocumented = registered.filter((name) => !readmeText.includes(name))
+check('none is missing from the README', undocumented.length === 0, undocumented.join(', '))
+
 console.log('\n-- the isolation recipe is stated, not just implied --')
 const readme = read('README.md')
 check('the README explains the shared registry', /shared by every profile/.test(readme))

@@ -11,31 +11,30 @@
 
 ## 2. 已探明的环境事实
 
-### NAS（SSH 别名 `nas`，Tailscale 直连）
+### 目标主机（x86_64 Linux NAS，SSH 别名 `nas`）
+
+下表只保留**影响架构决策**的事实。侦察原记录里的机器型号、存储容量、共享服务进程数、用户与组 id 等已删除——它们不构成论据，只会暴露一台具体的私有机器。
 
 | 项目 | 值 |
 | --- | --- |
-| 系统 | Linux 6.1.27 / x86_64，**UGREEN DX4600**（ugos，`ughomeusers` 组） |
-| Docker | 26.1.0 + Compose v2.26.1 |
-| 用户权限 | `saikewei` 在 `docker` 组（gid 121）→ **docker 免 sudo** |
-| 存储 | `/home` 7.2T，可用 2.0T |
-| 文件共享 | SMB 运行中（6×smbd）；NFS 守护进程在跑但 **`/etc/exports` 是空模板，未配置任何 export** |
+| 系统 | Linux / x86_64 |
+| Docker | 已装（26.x + Compose v2.26），该用户**免 sudo** |
+| 文件共享 | SMB 可用；NFS 守护进程在跑但 **`/etc/exports` 是空模板，未配置任何 export** |
 | devcontainer CLI | **未安装** |
 
 ### 目标 dev container（已存在，非本次创建）
 
 | 项目 | 值 |
 | --- | --- |
-| 容器名 | `epic_mirzakhani`（VS Code Dev Containers 生成） |
-| 镜像 | `vsc-shutterseek-6e1a3b72...-uid`（3.81 GB） |
-| 宿主路径 | `/volume1/docker/ShutterSeek` |
-| 容器路径 | `/workspaces/ShutterSeek`（bind mount） |
-| devcontainer.json | `/volume1/docker/ShutterSeek/.devcontainer/devcontainer.json` |
+| 容器名 | `my-project-devcontainer`（VS Code Dev Containers 生成） |
+| 宿主路径 | `/volume1/docker/my-project` |
+| 容器路径 | `/workspaces/my-project`（bind mount） |
+| devcontainer.json | `<宿主路径>/.devcontainer/devcontainer.json` |
 | Features | common-utils:2, git:1, **go:1**, **node:1** |
-| 容器内身份 | `root`，hostname `2cd1e7193d24`，Debian 12 (bookworm) |
-| 工具链 | **Go 1.25.11**, **Node v22.23.1**, git |
+| 容器内身份 | `root`，Debian 12 (bookworm) |
+| 工具链 | **Go 1.25.x**、**Node v22.x**、git |
 | 额外挂载 | `/photos`(ro), `/photos_uploads`(rw), `/go`, `/home/vscode/.{codex,claude,npm}` |
-| 项目 | Go 模块 `shutterseek`，分支 `dev`（领先 origin/dev 13 个提交） |
+| 项目 | 一个普通 Go 项目，bind mount 自宿主的项目目录 |
 
 ### 本机（macOS）
 
@@ -84,7 +83,7 @@
 | 方案 | 评估 |
 | --- | --- |
 | SSHFS / macFUSE | 本机没有，且 macOS 上要装内核扩展 + 重启 + 降低安全启动等级。**代价过高** |
-| SMB 挂载（macOS 原生客户端） | NAS 侧 SMB 在跑，本机无需 kext。但挂到的是**宿主路径** `/volume1/docker/ShutterSeek`，而容器视角是 `/workspaces/ShutterSeek`，还要加上 `/go`、`/usr/local/go`、`/home/vscode/*` 等容器独有路径。路径翻译会成为永久税 |
+| SMB 挂载（macOS 原生客户端） | NAS 侧 SMB 在跑，本机无需 kext。但挂到的是**宿主路径** `/volume1/docker/my-project`，而容器视角是 `/workspaces/my-project`，还要加上 `/go`、`/usr/local/go`、`/home/vscode/*` 等容器独有路径。路径翻译会成为永久税 |
 | NFS | 未配置 export，且 uid/gid 映射在 macOS 上麻烦 |
 | **协议级后端（选定）** | 不挂载，直接讲容器自己的语言。执行世界就是容器，路径就是容器路径，没有翻译层 |
 
@@ -118,15 +117,14 @@
 **在 DSH 内实际调用得到的证据：**
 
 ```
-devc_status →  hostname 2cd1e7193d24 / in_container=yes
-               go1.25.11 linux/amd64 / node v22.23.1 / x86_64
+devc_status →  hostname a1b2c3d4e5f6 / in_container=yes
+               go1.25.x linux/amd64 / node v22.x / x86_64
 
-devc_exec   →  ## dev...origin/dev [ahead 13]
-               M .gitignore
+devc_exec   →  git status --short --branch   →  在容器内读到该仓库的分支状态
                go build ./...  →  go build OK   (1m23s, 真实全量编译)
                go vet ./...    →  干净
 
-devc_read   →  go.mod，3289 bytes / 82 行，带行号
+devc_read   →  go.mod，带行号
 devc_glob   →  cmd/**/*.go  →  cmd/gen/main.go, cmd/server/main.go
 devc_grep   →  func main  →  cmd/gen/main.go:14, cmd/server/main.go:29
 ```
@@ -136,7 +134,7 @@ devc_grep   →  func main  →  cmd/gen/main.go:14, cmd/server/main.go:29
 ### 切片过程中发现并修掉的两个真问题
 
 1. **`spawn ENOENT`**：`SubprocessSpawnSpec.argv` 是**含程序名的完整 argv**，首元素必须是 `'ssh'` 而非第一个选项。
-2. **容器环境真实缺陷**：容器以 `root` 运行，而 bind mount 目录在 NAS 上属主是 `saikewei`，git 报 `detected dubious ownership`，进而让**所有** `go build` 因 VCS stamping 失败。已用 `git config --global --add safe.directory /workspaces/ShutterSeek` 修复。这是任何人在这个容器里都会撞上的坑，插件应当开箱处理。
+2. **容器环境真实缺陷**：容器以 `root` 运行，而 bind mount 目录在宿主上属主是**另一个 uid**，git 报 `detected dubious ownership`，进而让**所有** `go build` 因 VCS stamping 失败。用 `git config --global --add safe.directory <容器路径>` 可以就地修复。这是任何人在这种容器里都会撞上的坑，README 单列了一节说明。
 
 ### 已知待修项
 
@@ -229,7 +227,7 @@ ShellExecutor → LocalBashExecutor → SandboxBashExecutor → RoutingBashExecu
 **继承现有实现、只覆写需要分派的方法**，挂载点之外的路径全部 `super` 透传——本地分支的沙箱语义
 一行都没重写，因而不可能漂移。验收测试显式断言了这点（工作区外的本地写仍被拒绝）。
 
-**本地挂载点**：DSH 工作区必须是宿主上的真实目录，所以用一个本地目录（`~/.dsh/devcontainer/ShutterSeek`）
+**本地挂载点**：DSH 工作区必须是宿主上的真实目录，所以用一个本地目录（`~/.dsh/devcontainer/my-project`）
 整体代表容器根。两种拼写归一到同一 target，工具回报的是**容器路径**（这样模型读到的和容器里 `pwd`、
 `go build` 报的一致）。
 
@@ -258,14 +256,14 @@ surrounding capability seam instead."*
 
 ```
 bash  (workdir = 挂载点):
-  2cd1e7193d24              ← 容器 hostname
+  a1b2c3d4e5f6              ← 容器 hostname
   IN_CONTAINER              ← /.dockerenv 存在
-  go version go1.25.11 linux/amd64
-  /workspaces/ShutterSeek   ← 容器路径（不是挂载点）
+  go version go1.25.x linux/amd64
+  /workspaces/my-project   ← 容器路径（不是挂载点）
 
 read  (file_path = 挂载点/go.mod):
-  工具自身报告路径为 /workspaces/ShutterSeek/go.mod
-  1: module shutterseek
+  工具自身报告路径为 /workspaces/my-project/go.mod
+  1: module my-project
   3: go 1.25.0
 ```
 

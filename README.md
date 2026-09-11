@@ -71,11 +71,11 @@ folder inside. So **`devcontainer up` does not have to be implemented** for a co
 exists:
 
 ```
-folder /volume1/docker/ShutterSeek
-   │  docker ps --filter label=devcontainer.local_folder=/volume1/docker/ShutterSeek
-   ├─▶ container epic_mirzakhani  (running)
+folder /volume1/docker/my-project
+   │  docker ps --filter label=devcontainer.local_folder=/volume1/docker/my-project
+   ├─▶ container my-project-devcontainer  (running)
    │  docker inspect … --format '{{range .Mounts}}…'
-   └─▶ container path /workspaces/ShutterSeek
+   └─▶ container path /workspaces/my-project
 ```
 
 `devc_containers` answers exactly that, for one folder or for every dev container on the host.
@@ -103,12 +103,30 @@ Not required: a local Docker, macFUSE, sshfs, a local mount of any kind, or `dev
 ## Install — tools mode
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-devcontainer
+dsh plugin --profile web add dsh-devcontainer              # from npm
+dsh plugin --profile web add /path/to/dsh-devcontainer     # or a local checkout
 ```
 
-Restart the profile so the `devcontainer` row activates. The bundle ships its own composition row, so
-there is nothing to hand-edit. You get eight `devc_*` tools addressing the container by container
-path — see [Tools](#tools).
+The bundle ships its own composition row, so there is nothing to hand-edit to *install* it — but the
+row arrives **unconfigured**, and it has to point at your machine before anything works. Add this to
+`~/.dsh/profiles/web/cordis.patch.yml`:
+
+```yaml
+- id: devcontainer
+  config:
+    sshHost: my-nas                      # an alias from your own ~/.ssh/config
+    container: my-project-devcontainer   # an existing, running container on that host
+    containerRoot: /workspaces/my-project
+    hostRoot: /volume1/docker/my-project # optional; the same directory as the host sees it
+    tools: true
+    provideFs: false
+    provideShell: false
+    prompt: false
+```
+
+A patch replaces the whole `config` object, so restate every key you need rather than only the one you
+are changing. Restart the profile; the boot log names any key still missing. You then get eight
+`devc_*` tools addressing the container by container path — see [Tools](#tools).
 
 ## Install — routing mode
 
@@ -120,36 +138,29 @@ alone:
 dsh --profile devcontainer --from-default-profile web --dump-config
 
 # 2. the plugin
-dsh plugin --profile devcontainer add /path/to/dsh-devcontainer
+dsh plugin --profile devcontainer add dsh-devcontainer
 
-# 3. the profile's cordis.patch.yml (copy examples/devcontainer.cordis.patch.yml)
+# 3. copy the example patch and fill in your own values
+cp examples/devcontainer.cordis.patch.yml ~/.dsh/profiles/devcontainer/cordis.patch.yml
+$EDITOR ~/.dsh/profiles/devcontainer/cordis.patch.yml
 ```
 
-The profile patch does four things:
+`examples/devcontainer.cordis.patch.yml` is the complete patch, and it is worth reading rather than
+copying blindly. Beyond the configuration above, it does three things: it disables the three shipped
+rows the routers replace (`fs-sandbox`, `bash-sandbox`, `tool-fs-search`); it turns on
+`provideFs`/`provideShell`/`provideSearch`/`prompt`; and it gives the profile **its own workspace and
+session stores** so the container's workspaces and conversations stay out of your other profiles.
+That last part is not optional in practice — see
+[Keeping the container world out of your other profiles](#keeping-the-container-world-out-of-your-other-profiles).
 
-```yaml
-- id: fs-sandbox          # replaced by the routing filesystem
-  disabled: true
-- id: bash-sandbox        # replaced by the routing bash executor
-  disabled: true
-- id: tool-fs-search      # glob/grep spawn a LOCAL ripgrep; routing mode owns them
-  disabled: true
-- id: devcontainer
-  config:
-    mountPoint: /Users/you/.dsh/devcontainer/YourProject
-    provideFs: true
-    provideShell: true
-    provideSearch: true
-    prompt: true
-    autoWorkspace: true
-```
-
-Then boot it — the mount point is already registered as a workspace, so there is no
-"Add workspace" step:
+Then boot it:
 
 ```sh
 dsh --profile devcontainer
 ```
+
+Use "Add workspace" to register a project, then work on it normally: bash, read, write, edit, glob and
+grep all operate inside the container.
 
 A `web` profile holds the default port 3080, so both profiles can run at once only if one of
 them moves; the patch above pins `webserver.port` to 3099 for that reason. `--port` on the command
@@ -162,12 +173,12 @@ A DSH workspace must be a **real local directory** — the workspace registry ca
 resolves to one of three worlds:
 
 ```
-/Users/you/.dsh/devcontainer/root/nas/volume1/docker/ShutterSeek/x.go   (mountRoot: host `nas`)
-/Users/you/.dsh/devcontainer/ShutterSeek/x.go                          (mountPoint: the project)
+/Users/you/.dsh/devcontainer/root/nas/volume1/docker/my-project/x.go   (mountRoot: host `nas`)
+/Users/you/.dsh/devcontainer/my-project/x.go                          (mountPoint: the project)
         ↕
-        nas:/volume1/docker/ShutterSeek/x.go                           (the host)
+        nas:/volume1/docker/my-project/x.go                           (the host)
         ↕  bind mount, discovered from Docker
-        /workspaces/ShutterSeek/x.go                                   (the container)
+        /workspaces/my-project/x.go                                   (the container)
 ```
 
 `mountRoot` is a subtree that **mirrors every reachable machine's filesystem**, with the MACHINE as the
@@ -337,6 +348,23 @@ aborts the turn — the model can read the message and correct itself.
 
 In routing mode the `devc_*` tools remain available, which is how you reach container paths **outside**
 the mount point (`/go`, `/usr/local/go`, `/home/vscode`, other mounts).
+
+### Host-side tools
+
+Registered by `hostTools` (on by default). These address the **host** — the machine that runs the
+container — so they operate on host paths and host commands, not container ones. They need no mount
+point and no routing, which is why they also work in a tools-only profile.
+
+| Tool | Purpose |
+| --- | --- |
+| `devc_containers` | List every dev container on a host with the folder it belongs to, or resolve one folder: does it carry a `.devcontainer`, is there a container for it, can that container serve as its world. This is how a host directory becomes a container path, and no devcontainer build is involved. |
+| `devc_host_exec` | Run a bash command on the host: inspect the machine, its Docker state, a project directory. |
+| `devc_host_read` | Read a UTF-8 text file on the host, with line numbers. |
+| `devc_host_write` | Create or fully replace a UTF-8 text file on the host. Atomic; missing parents are created. |
+| `devc_host_ls` | List a directory on the host with type and size. |
+
+`devc_containers` is the one to reach for first when you know a project directory but not where it
+lives inside the container.
 
 ## How routing stays safe
 

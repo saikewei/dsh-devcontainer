@@ -13,15 +13,28 @@
 # Address the row by id (`devcontainer`) from your profile cordis.patch.yml to
 # override any of its config values; a patch replaces the whole `config` object,
 # so restate every key you need rather than only the one you are changing.
+#
+# Every value below is a PLACEHOLDER. Nothing works until you point it at your own machine,
+# which is deliberate: a bundle shipping one operator's host alias, container name and
+# project paths would be wrong for everybody else, and would quietly aim their commands at
+# a stranger's server. The plugin says so at boot while `sshHost` or `container` is empty.
 
 - insert:
     - id: devcontainer
       name: 'dsh-devcontainer'
       config:
-        sshHost: nas
-        container: epic_mirzakhani
-        containerRoot: /workspaces/ShutterSeek
-        hostRoot: /volume1/docker/ShutterSeek
+        # An alias from your own ~/.ssh/config. OpenSSH resolves the identity file, port
+        # and jump hosts for it, so nothing here needs to know about them.
+        sshHost: ''
+        # Container name or id on that host. It must already be running.
+        container: ''
+        # Absolute path inside the container that tools and routed paths default to.
+        containerRoot: '/'
+        # The same directory as the host sees it, when it is a bind mount. Informational.
+        hostRoot: ''
+        # A LOCAL directory standing for the container root; configuring it is what enables
+        # the workspace picker. Routing mode adds `provideFs`/`provideShell` and disables
+        # `fs-sandbox`/`bash-sandbox` — see README "Routing mode".
         mountPoint: ''
         tools: true
         provideFs: false

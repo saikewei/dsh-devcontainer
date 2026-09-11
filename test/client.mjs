@@ -5,6 +5,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 
 let failures = 0
 const check = (label, ok, detail) => {
@@ -62,13 +63,23 @@ const css = [...cssArray[1].matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]).j
 const tokens = [...new Set([...css.matchAll(/var\((--dsw-[a-z0-9-]+)/g)].map((m) => m[1]))]
 check('the stylesheet uses theme tokens at all', tokens.length >= 10, String(tokens.length))
 
-// The deployment's theme module is the authority on which aliases exist; it is absent outside
-// a DSH checkout, where only the structural checks below can run.
-const themePath = process.env.DSH_THEME_FILE ?? [
-  '/Users/saikewei/.npm/_npx/1e7f6d9597241db0/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js',
-].find((p) => existsSync(p))
+// The deployment's theme module is the authority on which aliases exist, so it is worth
+// resolving for real — but it is not a dependency of this package and lives outside a plain
+// checkout, so the check degrades to SKIP rather than failing. Candidates are derived from
+// the environment, never from a path belonging to whoever wrote this file: `$DSH_HOME`
+// defaults to `~/.dsh`, and `$DSH_HOME/profiles/node_modules` is the shared install
+// directory that mirrors the harness's own dependencies.
+const THEME_MODULE = 'node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js'
+const themeCandidates = [
+  process.env.DSH_THEME_FILE,
+  join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', THEME_MODULE),
+  join(here, '..', THEME_MODULE),
+].filter((candidate) => typeof candidate === 'string' && candidate !== '')
+
+const themePath = themeCandidates.find((p) => existsSync(p))
 if (themePath === undefined) {
   console.log('  SKIP  every token resolves in the shipped theme  -> theme module not found')
+  console.log('        (set DSH_THEME_FILE to check against a specific installation)')
 } else {
   const theme = readFileSync(themePath, 'utf8')
   const unknown = tokens.filter((token) => !theme.includes(token + ':'))

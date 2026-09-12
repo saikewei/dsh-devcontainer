@@ -145,10 +145,10 @@ try {
   const savedPath = process.env.PATH
   process.env.PATH = bin + ':' + savedPath
   try {
-    const refused = await new RemoteTransport({ get: () => undefined }, '-oProxyCommand=touch /tmp/pwned', undefined).collect('true')
+    const refused = await new RemoteTransport('-oProxyCommand=touch /tmp/pwned').collect('true')
     check('the transport refuses a destination that looks like an option', /starts with "-"/.test(refused.stderr), JSON.stringify(refused))
     check('and never spawns ssh at all', !existsSync(marker), 'ssh was reached')
-    const plain = await new RemoteTransport({ get: () => undefined }, 'nas', undefined).collect('true')
+    const plain = await new RemoteTransport('nas').collect('true')
     check('while an ordinary destination still reaches ssh', plain.exitCode === 0 && existsSync(marker), JSON.stringify(plain))
   } finally {
     process.env.PATH = savedPath

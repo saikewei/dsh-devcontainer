@@ -153,7 +153,7 @@ lib/
 ├── index.js              插件入口：工具注册 + 两种模式的装配 + 启动诊断
 ├── channel.js            常驻 JSON-lines 通道（每目标一条）
 ├── helper.mjs            容器内常驻 helper（每次连接重写）
-├── transport.js          SSH 传输：ctx.ssh 或本地 ssh 二进制
+├── transport.js          SSH 传输：本地 ssh 二进制（唯一后端）
 ├── hosts.js              解析 ~/.ssh/config，得到可选主机名册
 ├── discover.js           文件夹 → 容器：Docker label + inspect 的 bind mount
 ├── browse.js             /dsh-devcontainer 的 JSON API（config / list / prepare）
@@ -701,6 +701,49 @@ host，host 非法时那一次自己会抛并逃出处理器）。
 `test/hosts.mjs` 新增 13 条断言：名单的接受/拒绝/trim/空参数语义、配置读不出来时的行为，
 以及用一个**假 ssh 记录 argv**证明被拒的目标**根本没有 spawn**——没发生的 spawn 不可能被执行成
 ProxyCommand。5 条变异全部咬住。
+
+## 附八：与 dsh-ssh 解耦（2026-09）
+
+问的是"用了多少 dsh-ssh 的东西，能不能解耦"。查下来：**零声明依赖，一段从未执行的运行时分支**。
+
+### 清点
+
+| 位置 | 量 |
+| --- | --- |
+| `package.json` 的 deps/peer/devDeps | **0** |
+| profile 的 `dsh.profile.bundles` / `dependencies` | **0** |
+| `transport.js` 里因它存在的代码 | **71 行**（全文 276 行） |
+| 构造点 | `lib/index.js` 一处 + 4 个测试 |
+
+耦合本身只是一个软查找：`this.#ctx.get('ssh')`，由 `#ctxSshHost` 是否等于本 transport 的 host
+把关。没装 `dsh-ssh` 就返回 `undefined`，走 spawn `ssh`——本机一直如此。
+
+### 为什么删而不是留作可选加速
+
+它**从来没有执行过**。而且它是**按"存在与否"自动选中**的：挂了 `dsh-ssh` 的部署会拿到这段
+没人跑过的代码，其余部署拿到另一段。`#runtime()` 还是二选一——一旦它返回了个"存在但行为不同"
+的对象，**不会回退**到 spawn，而是直接失败。
+
+拆掉会失去的，说得准确一点只有一条：**只在该插件自己的 registry 里配置的主机，以及密码认证的
+主机**。我们 spawn 的是 `ssh -o BatchMode=yes`，没有回答密码提示的途径。其余都打平或更好——
+ProxyJump 在 OpenSSH 配置里本来就支持（destination 交给真的 `ssh`），host key 走 OpenSSH 自己的
+known_hosts，而连接复用本来也只发生在每个 (host, world, container) 的一条常驻通道上。
+
+### 改了什么
+
+* `RemoteTransport(ctx, host, ctxSshHost)` → `RemoteTransport(host)`；删掉 `#ctx`、`#ctxSshHost`、
+  `#runtime()`、`backend` getter，以及 `collect()` 与 `open()` 各一个分支。
+* `describe()` 一并删掉：它只回答"哪个后端应答的"，只剩一个后端后无话可说，且全仓库无调用者。
+* `withTimeout()` 一并删掉：它存在是因为另一条分支的 `client.exec` 没有自己的超时；现在每条路径
+  都 spawn 进程并自带定时器。
+* **276 行 → 178 行。** 5 个构造点与 `test/discover.mjs` 的 `backend` 断言随之更新——那条断言
+  改成检查 transport 报出的机器名，不再是恒真的 `=== 'ssh' || === 'ctx.ssh'`。
+
+### 保留的一处引用
+
+`lib/agent-hook.js` 里仍写着 *"The pattern is the one `@dsh-ssh/dsh-ssh` ships and documents"*。
+那说的是**路由形态的出处**，指的是 `@dsh-ssh/dsh-ssh`（提供 `ctx.sshPool`）——与本次删掉的
+`ctx.ssh`（来自另一个包 `dsh-ssh`）不是同一个。这是文献引用，不是依赖，留着。
 
 ## 附：本次产出文件
 

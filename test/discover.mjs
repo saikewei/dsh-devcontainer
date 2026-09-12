@@ -19,13 +19,13 @@ const check = (label, ok, detail) => {
   if (!ok) failures++
 }
 
-// One transport reaches one machine: (ctx, host, the host ctx.ssh owns).
-const transport = new RemoteTransport({ get: () => undefined }, CONFIG.sshHost, CONFIG.sshHost)
+// One transport reaches one machine.
+const transport = new RemoteTransport(CONFIG.sshHost)
 const containers = new DevContainers(transport)
 
 console.log('-- transport --')
-console.log('backend:', transport.backend, '| host:', transport.host)
-check('a transport backend answered', transport.backend === 'ssh' || transport.backend === 'ctx.ssh')
+console.log('host:', transport.host)
+check('the transport names the machine it reaches', transport.host === CONFIG.sshHost, String(transport.host))
 
 console.log('\n-- discovery --')
 const listed = await containers.list()

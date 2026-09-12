@@ -329,7 +329,7 @@ console.log('\n-- the transport\'s budget really is a STARTUP budget --')
   writeFileSync(join(bin, 'ssh'), '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 })
   const realPath = process.env.PATH
   process.env.PATH = bin + ':' + realPath
-  const transport = new RemoteTransport({ get: () => undefined }, 'stub', 'stub')
+  const transport = new RemoteTransport('stub')
   const aliveAfter = async (handle, ms) => {
     const outcome = await Promise.race([
       handle.done.then(() => 'dead'),

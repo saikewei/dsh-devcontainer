@@ -67,7 +67,7 @@ async function mintRealm(root) {
   const transportFor = (host) => {
     let found = transports.get(host)
     if (found === undefined) {
-      found = new RemoteTransport({ get: () => undefined }, host, CONFIG.sshHost)
+      found = new RemoteTransport(host)
       transports.set(host, found)
     }
     return found

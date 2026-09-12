@@ -6,7 +6,11 @@
 // writing into it, and `devc_status` — the tool whose whole job is to say what is wrong — says
 // everything is fine.
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { RemoteChannel } from '../lib/channel.js'
+import { RemoteTransport } from '../lib/transport.js'
 
 let failures = 0
 const check = (label, ok, detail) => {
@@ -27,7 +31,7 @@ const CONFIG = { sshHost: 'nas', container: 'epic', containerRoot: '/workspaces/
  * where the helper cannot be written.
  */
 function fakeTransport({ reply, installExit = 0, noNode = false } = {}) {
-  const state = { sent: [], handles: [], installed: 0, runs: 0 }
+  const state = { sent: [], handles: [], installed: 0, runs: 0, disarmed: 0 }
   return {
     state,
     async collect() {
@@ -45,14 +49,15 @@ function fakeTransport({ reply, installExit = 0, noNode = false } = {}) {
       const stdout = new EventEmitter()
       const stderr = new EventEmitter()
       let finished = false
-      let finish = () => {}
+      let resolveOutcome = () => {}
       const done = new Promise((resolve) => {
-        finish = () => {
+        resolveOutcome = (outcome) => {
           if (finished) return
           finished = true
-          resolve({ exitCode: installing ? installExit : 0 })
+          resolve(outcome)
         }
       })
+      const finish = () => resolveOutcome({ exitCode: installing ? installExit : 0 })
       stdin.write = (text) => {
         const lines = String(text).split(NL).filter(Boolean)
         for (const line of lines) {
@@ -81,8 +86,16 @@ function fakeTransport({ reply, installExit = 0, noNode = false } = {}) {
         stdout,
         stderr,
         done,
+        // The real transport arms a budget for STARTING the process and exposes this to stop
+        // it counting against the session. Recording the call is what pins the contract.
+        disarm() {
+          state.disarmed++
+        },
         terminate() {
-          finish()
+          // What a real SIGTERM looks like: a null code and a signal name. The outcome is the
+          // only record of WHY a channel went away, so the fake must not flatten it.
+          if (typeof state.onTerminate === 'function') state.onTerminate()
+          resolveOutcome({ exitCode: null, signal: 'SIGTERM' })
         },
       }
       state.handles.push(handle)
@@ -124,7 +137,27 @@ console.log('-- a completed handshake --')
   check('dispose drops the connection', channel.connected === false)
 }
 
-console.log('\n-- a handshake the helper REFUSES --')
+console.log('\n-- the startup budget is disarmed once the handshake answers --')
+{
+  // The bug this pins: `connect()` opened the helper with `{ timeoutMs: 30000 }`, and the
+  // transport treats that budget as a LIFETIME limit — it SIGKILLs the child when it elapses.
+  // The resident helper is meant to outlive the session, so every channel died 30 seconds in,
+  // taking every in-flight call and every forwarded connection with it. Nothing reported it:
+  // the next call simply reconnected, so the only symptom was a silent hang.
+  const ok = fakeTransport()
+  const channel = new RemoteChannel(ok, CONFIG, 'container')
+  await channel.connect()
+  check('a completed handshake disarms the budget', ok.state.disarmed === 1, String(ok.state.disarmed))
+  channel.dispose()
+
+  const refused = fakeTransport({ reply: (frame) => (frame.op === 'ping' ? { id: frame.id, ok: false, error: 'no such container' } : { id: frame.id, ok: true }) })
+  const refusedChannel = new RemoteChannel(refused, CONFIG, 'container')
+  await refusedChannel.connect().catch(() => {})
+  check('a handshake that FAILED leaves the budget armed', refused.state.disarmed === 0, String(refused.state.disarmed))
+  refusedChannel.dispose()
+}
+
+console.log('\n-- a refused handshake is not a connection --')
 {
   // The helper is alive and answering; it just says no. Returning that frame as a success
   // reported a healthy channel with `lastError` cleared.
@@ -245,6 +278,83 @@ console.log('\n-- notifications carry connection bytes without expecting a reply
   channel.dispose()
   // A disposed channel must not pretend a write landed.
   check('a disposed channel reports the write did NOT happen', channel.notify({ event: 'relay_data', relayId: 'r1', b64: 'AA==' }) === false)
+}
+
+console.log('\n-- onClose reports the process going away --')
+{
+  // A consumer holding something OPEN across the channel's life has nothing else to go on:
+  // in-flight calls are rejected and the next one reconnects, so a caller that makes no further
+  // call waits forever on a channel that is already gone.
+  const transport = fakeTransport()
+  const channel = new RemoteChannel(transport, CONFIG, 'container')
+  await channel.connect()
+  let announced = 0
+  const off = channel.onClose(() => { announced++ })
+  const handle = transport.state.handles[transport.state.handles.length - 1]
+  handle.terminate()
+  await settle(30)
+  check('a listener is told when the process ends', announced === 1, String(announced))
+  check('and the channel reports itself down', channel.connected === false, String(channel.connected))
+  // A killed process sets a signal and no exit code. Printing the code alone said "exit null",
+  // which names nothing — and the question it answers is the first one anybody asks.
+  check('naming HOW it ended, not just that it did', /killed by SIGTERM/.test(String(channel.lastError)), String(channel.lastError))
+
+  off()
+  transport.state.handles[transport.state.handles.length - 1].terminate()
+  await settle(20)
+  check('an unsubscribed listener is not called again', announced === 1, String(announced))
+
+  // Disposal must announce IMMEDIATELY, not whenever the process happens to die: the real
+  // terminate() sends SIGTERM and only escalates to SIGKILL a second later, and a consumer
+  // holding connections open cannot wait a second to learn they are already dead.
+  const stubborn = fakeTransport()
+  const second = new RemoteChannel(stubborn, CONFIG, 'container')
+  await second.connect()
+  // A process that ignores the termination request: its `done` never settles.
+  stubborn.state.handles[stubborn.state.handles.length - 1].terminate = () => {}
+  let onDispose = 0
+  second.onClose(() => { onDispose++ })
+  second.dispose()
+  check('disposing announces at once, without waiting for the process', onDispose === 1, String(onDispose))
+  await settle(20)
+  check('and only once', onDispose === 1, String(onDispose))
+}
+
+console.log('\n-- the transport\'s budget really is a STARTUP budget --')
+{
+  // The contract assertion above pins the call site; this pins the mechanism. A stub `ssh` on
+  // PATH stands in for the real one so the test needs no network and no host: it ignores its
+  // arguments and sleeps, exactly like a resident helper that has nothing to say.
+  const bin = mkdtempSync(join(tmpdir(), 'dsh-fake-ssh-'))
+  writeFileSync(join(bin, 'ssh'), '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 })
+  const realPath = process.env.PATH
+  process.env.PATH = bin + ':' + realPath
+  const transport = new RemoteTransport({ get: () => undefined }, 'stub', 'stub')
+  const aliveAfter = async (handle, ms) => {
+    const outcome = await Promise.race([
+      handle.done.then(() => 'dead'),
+      new Promise((resolve) => setTimeout(() => resolve('alive'), ms)),
+    ])
+    return outcome
+  }
+  try {
+    const armed = await transport.open('helper', { timeoutMs: 300 })
+    check('an armed budget kills the process when it elapses', (await aliveAfter(armed, 1200)) === 'dead')
+
+    const disarmed = await transport.open('helper', { timeoutMs: 300 })
+    disarmed.disarm()
+    check('a disarmed budget does NOT', (await aliveAfter(disarmed, 1200)) === 'alive')
+    disarmed.terminate()
+    await aliveAfter(disarmed, 2000)
+
+    const noBudget = await transport.open('helper', {})
+    check('no budget at all leaves it running', (await aliveAfter(noBudget, 800)) === 'alive')
+    noBudget.terminate()
+  } finally {
+    process.env.PATH = realPath
+    transport.dispose()
+    rmSync(bin, { recursive: true, force: true })
+  }
 }
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))

@@ -97,12 +97,21 @@ console.log('\n-- the relay carries bytes both ways --')
 // A fake channel: it records what the plugin pushes and lets the test push back, which is
 // exactly the seam the real channel exposes (notify + onEvent).
 function fakeChannel() {
-  const state = { opened: [], closed: [], listeners: new Set(), notify: [] }
+  const state = { opened: [], closed: [], listeners: new Set(), notify: [], closeListeners: new Set(), connected: true }
   return {
     state,
     onEvent(listener) {
       state.listeners.add(listener)
       return () => state.listeners.delete(listener)
+    },
+    onClose(listener) {
+      state.closeListeners.add(listener)
+      return () => state.closeListeners.delete(listener)
+    },
+    /** The process behind this channel went away, as the real one reports it. */
+    die() {
+      state.connected = false
+      for (const listener of [...state.closeListeners]) listener()
     },
     notify(frame) {
       state.notify.push(frame)
@@ -232,6 +241,61 @@ const refused = await new Promise((resolve) => {
   afterDispose.on('connect', () => resolve('connected'))
 })
 check('and the port is free afterwards', refused === 'ECONNREFUSED', String(refused))
+
+console.log('\n-- the channel dying must not leave a connection hanging --')
+// The symptom this pins, reported from real use: a web app worked, then after a while EVERY
+// request hung, and reloading the page fixed it until it hung again. The channel had died, and
+// each connection that was live at that moment stayed paused forever — neither closed nor
+// resumed, so the peer saw nothing wrong and never retried. The browser's pool filled up with
+// those and every later request queued behind them.
+{
+  const dying = fakeChannel()
+  const live = new Forwards({ channels: { forTarget: () => dying }, bind: '127.0.0.1' })
+  const messages = []
+  const watched = new Forwards({ channels: { forTarget: () => dying }, bind: '127.0.0.1', onChange: (m) => messages.push(m) })
+  await watched.add({ host: 'nas', container: 'epic', port: 8300 })
+  const peer = connect({ host: '127.0.0.1', port: 8300 })
+  await new Promise((resolve) => peer.on('connect', resolve))
+  for (let i = 0; i < 40 && dying.state.opened.length === 0; i++) await settle(5)
+  check('the connection is live first', dying.state.opened.length === 1 && watched.list()[0].connections === 1, JSON.stringify(watched.list()))
+
+  const closed = new Promise((resolve) => peer.on('close', () => resolve(true)))
+  dying.die()
+  const wasClosed = await Promise.race([closed, settle(1000).then(() => false)])
+  check('a live connection is CLOSED when the channel dies, not left hanging', wasClosed === true)
+  check('and the relay is forgotten', watched.list()[0].connections === 0, JSON.stringify(watched.list()))
+  check('and the cause is logged with the channel\'s own message', messages.some((m) => m.includes('went away')), JSON.stringify(messages))
+
+  // A later connection must be able to use the channel again once it is back.
+  dying.state.connected = true
+  const second = connect({ host: '127.0.0.1', port: 8300 })
+  await new Promise((resolve) => second.on('connect', resolve))
+  for (let i = 0; i < 40 && dying.state.opened.length < 2; i++) await settle(5)
+  check('the forward still works after the channel returns', dying.state.opened.length === 2, String(dying.state.opened.length))
+  second.destroy()
+  watched.disposeAll()
+  live.disposeAll()
+}
+
+console.log('\n-- a channel that is gone does not silently swallow a pause --')
+// `notify` is false for a full pipe AND for a channel that is gone. Treating both as "wait for
+// drain" left the socket paused with nothing that would ever resume it.
+{
+  const gone = fakeChannel()
+  gone.state.connected = false
+  gone.notify = () => false
+  gone.onceDrain = () => {}
+  const forwardsGone = new Forwards({ channels: { forTarget: () => gone }, bind: '127.0.0.1' })
+  await forwardsGone.add({ host: 'nas', container: 'epic', port: 8400 })
+  const peer = connect({ host: '127.0.0.1', port: 8400 })
+  await new Promise((resolve) => peer.on('connect', resolve))
+  const closed = new Promise((resolve) => peer.on('close', () => resolve(true)))
+  peer.write('GET / HTTP/1.1\r\n\r\n')
+  const wasClosed = await Promise.race([closed, settle(1000).then(() => false)])
+  check('a write into a dead channel ends the connection', wasClosed === true)
+  check('and leaves no relay behind', forwardsGone.list()[0].connections === 0, JSON.stringify(forwardsGone.list()))
+  forwardsGone.disposeAll()
+}
 
 console.log('\n-- a peer that speaks before the relay exists is not dropped --')
 // The race that mattered: a browser writes its request the instant the TCP connection opens,

@@ -287,10 +287,31 @@ globalThis.window = { __ModuleLoader__: { load: (definition) => { captured = def
 await import('../lib/client.js')
 check('the bundle registers itself with the loader', captured !== null && captured.id === 'dsh-devcontainer')
 
-const client = captured.factory((name) => {
-  if (name === 'react') return REACT_STUB
-  throw new Error('unexpected require: ' + name)
-})
+/**
+ * The shared UI primitives the app shell serves. The bundle requires it at load time and keeps
+ * whatever it got, so the only way to exercise both branches is a module instance per answer —
+ * which is why the factory below is called more than once.
+ */
+const CodeBlock = (props) => ({ type: CodeBlock, props, children: [] })
+// `createElement` stores the component FUNCTION as `type`, so a node is identified by what the
+// stub advertises rather than by a string the stub cannot set.
+CodeBlock.displayName = 'CodeBlock'
+const PRIMITIVES = { CodeBlock }
+
+/** One independent instance of the bundle, resolving `require` against the given primitives. */
+function makeClient(primitives) {
+  return captured.factory((name) => {
+    if (name === 'react') return REACT_STUB
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') {
+      if (primitives === undefined) throw new Error('module not available')
+      return primitives
+    }
+    throw new Error('unexpected require: ' + name)
+  })
+}
+
+const client = makeClient(PRIMITIVES)
+const bareClient = makeClient(undefined)
 check('and exports an apply plus its service list', typeof client.apply === 'function' && Array.isArray(client.inject))
 // The tab is an ADDITION: a deployment without the right sidebar must still get the directory
 // picker and the port panel, so the registry is read optionally rather than declared. Declaring
@@ -322,23 +343,28 @@ const makeCtx = (services) => ({
   slots: services.slots,
   uiWorkspace: { pickDirectory: () => {} },
 })
-const slots = {
-  inject: (name, callback) => {
-    injected.push(name)
-    // The pane callback is the one that carries the body registration, so drive it; the
-    // others take the real code path but need no slot tree behind them.
-    if (name === 'sidebar.right.pane.tab') callback()
-    return () => {}
-  },
-  register: (registration, component) => {
-    paneBody = { registration, component }
-    return () => {}
-  },
+/** A slot registry that hands the pane body it is given to `sink`. */
+function makeSlots(sink) {
+  return {
+    inject: (name, callback) => {
+      injected.push(name)
+      // The pane callback is the one that carries the body registration, so drive it; the
+      // others take the real code path but need no slot tree behind them.
+      if (name === 'sidebar.right.pane.tab') callback()
+      return () => {}
+    },
+    register: (registration, component) => {
+      sink.body = { registration, component }
+      return () => {}
+    },
+  }
 }
+const paneSink = {}
 await client.apply(makeCtx({
-  slots,
+  slots: makeSlots(paneSink),
   sidebarRightTabs: { register: (definition) => { registered = definition; return () => {} } },
 }))
+paneBody = paneSink.body
 globalThis.fetch = originalFetch
 
 check('a tab type is registered', registered !== null)
@@ -387,14 +413,14 @@ check('the title is the basename', registered.title(addressOf(CONTAINER_ROOT + '
 check('the pane body registers under the type id, not the kind', paneBody?.registration?.key === registered.id, JSON.stringify(paneBody?.registration))
 check('through an injected slot, so a late declaration still lands', injected.includes('sidebar.right.pane.tab'))
 
-console.log('\n-- the tab hands its drawing to the SHIPPED viewer --')
-// The point of the whole design: only the FETCH is this plugin's. Line numbers, the per-line
-// DOM and the addressed-line highlight come from the document body the harness already ships,
-// reached through `sidebar.right.tab.document` — a slot whose `DocumentContent` owner prop is
-// part of its documented contract. So the assertions below are about the CONTRACT we hand it,
-// not about markup we drew.
+console.log('\n-- the tab draws with the harness own code renderer --')
+// The point of the whole design: only the FETCH is this plugin's. Line numbers, syntax
+// highlighting and the copy control come from the shared `CodeBlock` the shipped document
+// preview draws its code files with — reached through the primitives module both bundles
+// require, NOT through `sidebar.right.tab.document`. That slot was tried first and cannot
+// deliver: its default body for text renders no visible line numbers at all.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5))
-/** Render the body the way the slot would, then let its fetch settle and render again. */
+/** Render the body the way its slot would, then let its fetch settle and render again. */
 async function renderBody(component, props) {
   hookSlots = []
   hookIndex = 0
@@ -406,6 +432,15 @@ async function renderBody(component, props) {
   pendingEffects = []
   return component(props)
 }
+const findByType = (node, type) => {
+  if (node === null || typeof node !== 'object') return undefined
+  if (node.type === type || node.type?.displayName === type) return node
+  for (const child of node.children ?? []) {
+    const found = findByType(child, type)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
 const findByProp = (node, key) => {
   if (node === null || typeof node !== 'object') return undefined
   if (node.props !== undefined && node.props[key] !== undefined) return node
@@ -416,102 +451,83 @@ const findByProp = (node, key) => {
   return undefined
 }
 
-const SHIPPED_SLOT = 'sidebar.right.tab.document'
-const registry = {
-  // Deliberately NOT builtin-first, and deliberately carrying a builtin that DOES claim an
-  // extension: the fallback is the catch-all builtin, not whichever builtin registered first,
-  // and a snapshot where those coincide would make the two indistinguishable.
-  getSnapshot: () => [
-    { id: 'external/go', priority: 'extension', extensions: ['go'], title: () => 'go' },
-    // Present but NOT matching a `.go` or an extensionless path. The shipped ranking drops an
-    // implementation with no matching extension outright — without that drop, its higher band
-    // would let it take a path it cannot render.
-    { id: 'external/ts', priority: 'extension', extensions: ['ts'], title: () => 'ts' },
-    // A builtin that claims one extension: it may render `.go` as a last resort, but an
-    // EXTERNAL implementation of the same extension outranks it.
-    { id: 'builtin/go', priority: 'builtin', extensions: ['go'], title: () => 'go' },
-    { id: 'builtin/text', priority: 'builtin', extensions: [], title: () => 'text' },
-    // Two implementations both matching `x.d.ts`. The LONGER extension is the more specific
-    // claim and has to win, so this pair is what pins the length tie-break.
-    { id: 'external/dts', priority: 'extension', extensions: ['d.ts'], title: () => 'dts' },
-  ],
-}
-const slotCalls = []
-const renderSlot = (name, props, options) => {
-  slotCalls.push({ name, props, options })
-  return { type: 'shipped-body', props, children: [] }
-}
 const goPath = CONTAINER_ROOT + '/internal/service/cache.go'
 const fileText = 'package main\n\nfunc main() {}\n'
+const fileMessage = { text: fileText, remotePath: goPath, bytes: fileText.length, truncated: false }
 /** Stub the route for one render, and always put the real `fetch` back afterwards. */
-async function withFileFetch(run) {
-  globalThis.fetch = async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ({ text: fileText, remotePath: goPath, bytes: fileText.length, truncated: false }),
-  })
+async function withFileFetch(run, payload = fileMessage) {
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => payload })
   try {
     return await run()
   } finally {
     globalThis.fetch = originalFetch
   }
 }
-const bodyProps = {
-  useTabInfo: () => ({ tab: { contentId: addressOf(goPath) } }),
-  renderSlot,
-  documentPreviews: registry,
-}
-const tree = await withFileFetch(() => renderBody(paneBody.component, bodyProps))
+/** Render one instance's pane body for a container path. */
+const renderPath = (component, path) =>
+  withFileFetch(() => renderBody(component, {
+    useTabInfo: () => ({ tab: { contentId: addressOf(path) } }),
+  }))
 
-check('it renders into the shipped document body slot', slotCalls[0]?.name === SHIPPED_SLOT, JSON.stringify(slotCalls.map((c) => c.name)))
+const tree = await renderPath(paneBody.component, goPath)
+const block = findByType(tree, 'CodeBlock')
+
+check('it renders the shared CodeBlock', block !== undefined, JSON.stringify(tree?.type))
+check('with line numbers ON', block?.props?.lineNumbers === true, String(block?.props?.lineNumbers))
+check('carrying the file text', block?.props?.code === fileText)
+check('a grammar for a known suffix', block?.props?.lang === 'go', String(block?.props?.lang))
+check('and the copy control labelled', block?.props?.copyLabel !== undefined && block?.props?.copiedLabel !== undefined)
+check('not marked as a stream, since the read is complete', block?.props?.streaming === false, String(block?.props?.streaming))
+check('with a scrollport the block can own', block?.props?.contentRef !== undefined)
+const scrollportOf = (node) => {
+  if (node === null || typeof node !== 'object') return undefined
+  if (typeof node.props?.className === 'string' && node.props.className.includes('dshDc_fileScroll')) return node
+  for (const child of node.children ?? []) {
+    const found = scrollportOf(child)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
 check(
-  'with a DocumentContent the slot contract declares',
-  slotCalls[0]?.props?.content?.kind === 'text' && Array.isArray(slotCalls[0]?.props?.content?.pages),
-  JSON.stringify(slotCalls[0]?.props?.content)?.slice(0, 120),
+  'opening wrapped, as the shipped viewer does',
+  scrollportOf(tree)?.props?.className?.includes('dshDc_fileWrapped') === true,
+  String(scrollportOf(tree)?.props?.className),
 )
-// The body splits each page on newlines, so the count it is given has to be that split's own
-// length — a trailing newline makes this line count one MORE than the visible lines.
-check(
-  'the page carries the line count the body splits on',
-  slotCalls[0]?.props?.content?.pages?.[0]?.lines === fileText.split('\n').length,
-  String(slotCalls[0]?.props?.content?.pages?.[0]?.lines),
-)
-check('and the offset its line numbers start at', slotCalls[0]?.props?.content?.pages?.[0]?.offset === 0, String(slotCalls[0]?.props?.content?.pages?.[0]?.offset))
-check('carrying the file text', slotCalls[0]?.props?.content?.text === fileText)
-check('dispatching to the implementation matched by EXTENSION', slotCalls[0]?.options?.entryKey === 'external/go', String(slotCalls[0]?.options?.entryKey))
-check('with the tab hook the body calls inside itself', typeof slotCalls[0]?.options?.hookContext === 'function')
-check('and a fallback, so a missing occupant is not a blank pane', slotCalls[0]?.options?.fallback !== undefined)
-check('opening wrapped, as the shipped viewer does', slotCalls[0]?.props?.wrap === true)
-check('with a scrollport the body may address', slotCalls[0]?.props?.scrollportRef !== undefined)
-const scroller = findByProp(tree, 'data-textpreview-wrap')
-check('and a scrollport that is the one that wraps', scroller?.props?.className?.includes('dshDc_fileWrapped') === true, String(scroller?.props?.className))
 check('offered as a toggle in the header', findByProp(tree, 'aria-pressed') !== undefined)
 
-// A path with no extension match falls back the way the shipped ranking does, rather than
-// dispatching to whatever happened to be registered first.
-const plainCalls = []
-const plainBody = await withFileFetch(() => renderBody(paneBody.component, {
-  ...bodyProps,
-  useTabInfo: () => ({ tab: { contentId: addressOf(CONTAINER_ROOT + '/README') } }),
-  renderSlot: (name, props, options) => { plainCalls.push({ name, props, options }); return null },
-}))
-check('a path with no extension match is still drawn', plainCalls.length === 1, String(plainCalls.length))
-check('and falls back to the builtin implementation', plainCalls[0]?.options?.entryKey === 'builtin/text', String(plainCalls[0]?.options?.entryKey))
+// The grammar has to be the highlighter's NAME, not the suffix: handing it "ts" is exactly how
+// a file renders with no highlighting, and a longer compound suffix must still resolve.
+for (const [path, expected] of [
+  ['/x/main.ts', 'typescript'],
+  ['/x/api/client.d.ts', 'typescript'],
+  ['/x/app.jsx', 'javascript'],
+  ['/x/run.bash', 'shellscript'],
+  ['/x/values.yaml', 'yaml'],
+  ['/x/README.md', 'markdown'],
+  ['/x/index.html', 'html'],
+  ['/x/query.sql', 'sql'],
+  ['/x/config.toml', 'toml'],
+]) {
+  const one = await renderPath(paneBody.component, CONTAINER_ROOT + path)
+  check(`  ${path} highlights as ${expected}`, findByType(one, 'CodeBlock')?.props?.lang === expected, String(findByType(one, 'CodeBlock')?.props?.lang))
+}
+for (const path of ['/x/notes.txt', '/x/.gitignore', '/x/Makefile', '/x/data.unknownext']) {
+  const one = await renderPath(paneBody.component, CONTAINER_ROOT + path)
+  const drawn = findByType(one, 'CodeBlock')
+  check(`  ${path} still gets a block, with no grammar`, drawn !== undefined && drawn.props.lang === undefined, String(drawn?.props?.lang))
+}
 
-// Two implementations can match one path. The shipped ranking takes the LONGER extension, which
-// is the more specific claim, and that order must survive being reproduced here.
-const typedCalls = []
-await withFileFetch(() => renderBody(paneBody.component, {
-  ...bodyProps,
-  useTabInfo: () => ({ tab: { contentId: addressOf(CONTAINER_ROOT + '/frontend/src/api/client.d.ts') } }),
-  renderSlot: (name, props, options) => { typedCalls.push({ name, props, options }); return null },
+// A shell that never serves the primitives module loses only the highlighting: the file is
+// still drawn here rather than leaving an empty tab. The bare instance is a separate module
+// with its own captured body, because the require answer is fixed when the bundle loads.
+const bareSink = {}
+await bareClient.apply(makeCtx({
+  slots: makeSlots(bareSink),
+  sidebarRightTabs: { register: () => () => {} },
 }))
-check('the LONGEST matching extension wins', typedCalls[0]?.options?.entryKey === 'external/dts', String(typedCalls[0]?.options?.entryKey))
-
-// And a deployment that never mounted the shipped previewer still shows the file, because the
-// fallback is this plugin's own <pre> rather than an empty slot.
-const noRegistry = await withFileFetch(() => renderBody(paneBody.component, { ...bodyProps, documentPreviews: undefined }))
-check('with no previewer registered the text is still drawn here', findByProp(noRegistry, 'className') !== undefined)
+const bareTree = await renderPath(bareSink.body.component, goPath)
+check('with no primitives module the text is still drawn', findByType(bareTree, 'pre') !== undefined)
+check('and no CodeBlock is attempted', findByType(bareTree, 'CodeBlock') === undefined)
 
 console.log('')
 if (failures > 0) {

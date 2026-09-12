@@ -103,22 +103,20 @@ to land:
 * The tab reads through `GET /dsh-devcontainer/file`, which resolves the path to a machine and a
   container with the same `worlds.locate` the tools use. The browser names no machine and no
   container, so nothing it sends has to be trusted.
-* **The drawing is the shipped viewer's, not a lookalike.** Only the fetch is this plugin's: the tab
-  hands the text to the document body the harness already ships, through the public
-  `sidebar.right.tab.document` slot, whose `DocumentContent` owner prop is part of that slot's
-  documented contract. Line numbers, the per-line DOM and the addressed-line highlight are therefore
-  the original implementation's — and a deployment that registers its own viewer for an extension
-  gets that one here too, because the implementation is chosen by the same ranking the previewer
-  uses rather than by a hardcoded id.
-* Wrapping is a `white-space` on this tab's own scrollport — the shipped page element sets
-  `white-space: inherit` precisely so its host can own it — so the wrap toggle lives in this tab's
-  header next to reload, and defaults to wrapped as the previewer does.
+* **The code is drawn by the harness's own renderer.** Only the fetch is this plugin's: the tab
+  renders the shared `CodeBlock` from `@deepseek-ai/dsh-client-ui-primitives` — the very component
+  the shipped previewer draws its code files with — so line numbers, syntax highlighting, the copy
+  control and the scrolling are the original implementation's rather than a lookalike. The grammar
+  comes from the file's suffix, through the same extension→language table the previewer uses.
+* Wrapping is a `white-space` on this tab's own scrollport, driven through the block's
+  `--dsl-code-block-line-white-space` custom property, so the wrap toggle lives in this tab's header
+  next to reload and defaults to wrapped as the previewer does.
 * Text only, and only the first 2 MB of it. A longer file is served **truncated** rather than
   refused, because for a log the head is the useful answer; a binary file is refused with that
   reason rather than rendered as mojibake.
 
-Empty files, failures, and a deployment that never mounted the shipped previewer fall back to this
-plugin's own plain `<pre>`, so the file stays readable — just without line numbers there.
+Empty files and failures show their reason in place. A shell that does not serve the primitives
+module falls back to this plugin's own plain `<pre>` — the file stays readable, without line numbers.
 
 The same mechanism covers the file references your closing prose makes in inline code, since both
 surfaces open through one `openFile`.

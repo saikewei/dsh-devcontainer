@@ -533,44 +533,52 @@ chip 点击 → openFile(path) → 地址 dsh-resource://file/session/<sid>/<pat
 另外 `coexists` 的 `fallback` 互斥是**抛异常**而不是"低优先级"，读起来像可以共存；注释里那句
 "shares its kind with nothing" 才是权威。
 
-### 第一版走错了：自己画了一个更简陋的查看器
+### 查看器：两次走错，第三次才找对
 
-`ContainerFileBody` 的第一版把内容塞进一个手写的 `<pre>`。能用，但**折行、行号、分页、
-变更提示全丢了**——等于在侧边栏里塞了一个比原版差的查看器。
+**第一版**把内容塞进手写的 `<pre>`。能用，但折行、行号、分页、变更提示全丢了——等于在侧边栏里
+塞了一个比原版差的查看器。
 
-原版查看器是**一整个 pane**（头部栏 + 查看器选择 + 分页读取 + 正文实现注册表），没有为外部
-复用做组件化。唯一公开的复用点是正文槽：
+**第二版**改成把内容交给 `sidebar.right.tab.document` 槽，以为那就是"复用原版"。**这一步错了，
+而且错在两处**：
 
-* `sidebar.right.tab.document` 是 **keyed / session 作用域**的公开槽，`ownerProps` 在槽位目录里
-  记录为 `DocumentContent`（`{kind:'text', text, pages:[{offset,text,lines}], eof}`），注释原文是
-  "contents prepared by the preview owner using ordinary file reads"，`replaceRisk: none`。
-* 槽按**实现 id** 派发；`TextBody` 收到 `content` 后渲染 `pre` > `line` 两层，行号来自
-  `page.offset + index`。
+* 那个槽**默认派发到 `TextBody`，而 `TextBody` 根本没有可见行号**。它的 CSS 只有
+  `.dhJKeW_line{padding:0 10px}`，全文没有任何 `:before{content:attr(data-textpreview-line)}`——
+  那个 `data-` 属性是**滚动定位用的 DOM 钩子，不是数字**。当时 README 里写的"行号是原实现的"
+  是错的，已更正。
+* 整条委托链（`ctx.get('documentPreviews')` → `renderSlot` → keyed 派发）**没能确认生效**，
+  于是静默落到自家 `<pre>`，看起来就和第一版一样。
 
-所以改成：**只保留取字节，画交给原版。** `renderSlot('sidebar.right.tab.document', {...})`，
-`entryKey` 由我们自己复刻原版排序得到：
+**真正带行号和高亮的是另一个 occupant**：`CodeBody`。它渲染
 
+```js
+primitives.CodeBlock({ code, lang: languageForPath(path), lineNumbers: true,
+                       copyLabel, copiedLabel, streaming: !content.eof, contentRef })
 ```
-filter(length > 0)                        // 扩展名不匹配的实现根本不参与
-sort by rank(外部 1 > builtin 0), 再按匹配到的扩展名长度降序, 再按注册顺序
-ranked[0] ?? 第一个「无扩展名」的 builtin   // 回退必须是万能的那一个
-```
 
-最后一条是**保真度**上的一个坑：原版是按具体 id 找纯文本实现的；只写"第一个 builtin"的话，
-一个声明了扩展名的 builtin 会被误当成回退。改成"第一个 `extensions` 为空的 builtin"——
-语义正确，且不必引用别的包的私有 id。
+`CodeBody` 本身只是它外面一层很薄的壳（加 `data-code-preview` / `data-wrap`）。
 
-**折行**是容器上的一条 `white-space`：原版的 page 元素特意设 `white-space:inherit`，
-所以本 tab 的滚动容器设 `pre` / `pre-wrap` 即可，**不引用对方任何类名**。默认开启，与原版一致。
+**第三版（现行）**：不走槽，**直接要那个组件**。`@deepseek-ai/dsh-client-ui-primitives` 由 app
+shell（`dsh-web-frontend`）提供，是任何客户端 bundle 都能按名字 `require` 的运行时模块，已有几十个
+随包插件这么用（声明在 `dsh.client.inject` 里）。于是：
 
-保留的自家 chrome 只有头部（路径、折行开关、刷新）；空文件、失败、以及没挂载原版预览器的部署
-回退到自家 `<pre>`，文件始终可读。
+* 行号、语法高亮、复制按钮、滚动全是原实现的——因为**就是同一个组件**。
+* 不再依赖 `documentPreviews` 服务可达性、槽派发、keyed entryKey 这三个不确定环节。
+* `require` 包在 try/catch 里：取不到就退回自家 `<pre>`，文件仍可读。
 
-顺带：客户端测试因此升级成**真正的渲染**——桩 React 从四个空方法换成一个迷你 hook 运行时
-（hook 槽数组 + effect 收集 + `createElement` 返回普通对象），于是"把 `DocumentContent` 交给
-原版槽"这条契约是被**跑出来**验证的，而不是读源码猜的。复刻的排序规则里，"更长扩展名胜出"和
-"回退是万能 builtin"两条最初都漏网——夹具里没有能让它们起作用的实现，补上 `.ts`/`.d.ts` 与
-一个带扩展名的 builtin 之后才咬住。
+**语法表**是原版那张表（26 种语言）的副本——它没被导出。注意高亮器要的是**语法名**（`typescript`），
+不是后缀（`ts`）；直接传后缀就是"渲染了但不高亮"的典型错法。
+
+**折行**通过该 block 读的 `--dsl-code-block-line-white-space` 自定义属性驱动，设在自己的滚动容器上。
+选择器写成 `.dshDc_fileScroll.dshDc_fileWrapped`（双类，特异性 0,2,0）以压过它自己的
+`.<hash>_code pre`，否则谁赢取决于样式表插入顺序。
+
+顺带：客户端测试因此升级成**真正的渲染**——桩 React 是一个迷你 hook 运行时（hook 槽数组 + effect
+收集 + `createElement` 返回普通对象），`require` 桩按模块实例返回或不返回 primitives，于是
+"用 `CodeBlock` 且 `lineNumbers: true`"和"没有 primitives 时退化"两条分支都是**跑出来**验证的。
+
+**变异测试本身也踩了一个坑**：最初的变异脚本用 `String.replace`（只替换第一处），而
+`lineNumbers: true` 在注释里也出现过一次——变异打在注释上，等于没变异，报了两条假 MISS。
+改成全局替换后，9 条变异全部咬住。
 
 ### 真机验证抓到的两个 bug（单测没覆盖）
 

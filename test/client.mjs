@@ -271,7 +271,14 @@ const client = captured.factory((name) => {
   throw new Error('unexpected require: ' + name)
 })
 check('and exports an apply plus its service list', typeof client.apply === 'function' && Array.isArray(client.inject))
-check('declaring the tab registry it consumes', client.inject.includes('sidebarRightTabs'), JSON.stringify(client.inject))
+// The tab is an ADDITION: a deployment without the right sidebar must still get the directory
+// picker and the port panel, so the registry is read optionally rather than declared. Declaring
+// it would make the whole bundle wait, trading three features for one.
+check(
+  'the tab registry is NOT a hard dependency',
+  !client.inject.includes('sidebarRightTabs') && client.inject.includes('slots'),
+  JSON.stringify(client.inject),
+)
 
 const originalFetch = globalThis.fetch
 globalThis.fetch = async () => ({
@@ -283,27 +290,51 @@ globalThis.fetch = async () => ({
 const injected = []
 let registered = null
 let paneBody = null
-const fakeCtx = {
-  slots: {
-    inject: (name, callback) => {
-      injected.push(name)
-      // The pane callback is the one that carries the body registration, so drive it; the
-      // others take the real code path but need no slot tree behind them.
-      if (name === 'sidebar.right.pane.tab') callback()
-      return () => {}
-    },
-    register: (registration, component) => {
-      paneBody = { registration, component }
-      return () => {}
-    },
+// `ctx.inject(services, cb)` is how the bundle waits for the tab registry WITHOUT making the
+// whole client half wait for it, so the fake resolves it eagerly and records the ask.
+const injectAsks = []
+const makeCtx = (services) => ({
+  inject: (names, callback) => {
+    injectAsks.push(names)
+    if (names.every((name) => services[name] !== undefined)) callback({ ...services, slots: services.slots })
   },
+  slots: services.slots,
   uiWorkspace: { pickDirectory: () => {} },
-  sidebarRightTabs: { register: (definition) => { registered = definition; return () => {} } },
+})
+const slots = {
+  inject: (name, callback) => {
+    injected.push(name)
+    // The pane callback is the one that carries the body registration, so drive it; the
+    // others take the real code path but need no slot tree behind them.
+    if (name === 'sidebar.right.pane.tab') callback()
+    return () => {}
+  },
+  register: (registration, component) => {
+    paneBody = { registration, component }
+    return () => {}
+  },
 }
-await client.apply(fakeCtx)
+await client.apply(makeCtx({
+  slots,
+  sidebarRightTabs: { register: (definition) => { registered = definition; return () => {} } },
+}))
 globalThis.fetch = originalFetch
 
 check('a tab type is registered', registered !== null)
+check(
+  'the registry is waited for through ctx.inject, not a fiber dependency',
+  injectAsks.some((names) => names.includes('sidebarRightTabs')),
+  JSON.stringify(injectAsks),
+)
+
+// And a deployment that never serves that registry loses only the tab: the ask stays
+// unanswered, and every other registration in apply() has already happened.
+let withoutRegistry = 0
+await client.apply(makeCtx({
+  slots: { inject: () => { withoutRegistry++; return () => {} }, register: () => () => {} },
+}))
+check('a deployment with no tab registry still applies its other surfaces', withoutRegistry > 0, String(withoutRegistry))
+check('and registers no tab type there', registered !== null)
 check(
   'whose kind is NOT the shipped text previewer\'s',
   registered !== null && registered.kind !== 'text',

@@ -74,7 +74,11 @@ function functionBody(text, name) {
 console.log('-- the style block is theme-driven --')
 const cssArray = source.match(/const CSS = \[([\s\S]*?)\]\.join/)
 check('the stylesheet is declared once as a joined array', cssArray !== null)
-const css = [...cssArray[1].matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]).join('')
+// Full-line comments are legal inside the array, and one silently broke the string pairing
+// below: an apostrophe in it closed a CSS rule's opening quote, so every rule after it was read
+// as the wrong thing. Strip them before pairing quotes.
+const cssBody = (cssArray?.[1] ?? '').replace(/^\s*\/\/.*$/gm, '')
+const css = [...cssBody.matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]).join('')
 
 const tokens = [...new Set([...css.matchAll(/var\((--dsw-[a-z0-9-]+)/g)].map((m) => m[1]))]
 check('the stylesheet uses theme tokens at all', tokens.length >= 10, String(tokens.length))
@@ -248,17 +252,34 @@ check('and is injected rather than registered blind', applyBody.includes("inject
 
 console.log('\n-- the container file tab claims the right addresses, and only those --')
 // This section LOADS the bundle rather than reading it. The module only ever calls
-// `require('react')`, and `apply()` renders nothing, so a four-method stub is the whole
-// runtime it needs — and in exchange the address parser and the `canOpen` veto are exercised
-// for real. A source-level assertion here would pass on a prefix comparison that is off by a
-// slash, which is exactly the mistake that would send a local file to a dead tab.
+// `require('react')`, so a small hook runtime is the whole thing it needs — and in exchange the
+// address parser, the `canOpen` veto and the render the tab actually produces are exercised for
+// real. A source-level assertion would pass on a prefix comparison that is off by one slash,
+// which is exactly the mistake that would send a local file to a dead tab.
+//
+// The runtime is deliberately tiny: one hook slot array, effects collected and drained after
+// each pass, and `createElement` returning a plain object instead of touching a DOM.
+let hookSlots = []
+let hookIndex = 0
+let pendingEffects = []
 const REACT_STUB = {
-  createElement: () => null,
-  useState: () => [undefined, () => {}],
-  useEffect: () => {},
+  createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
+  useState: (initial) => {
+    const at = hookIndex++
+    if (!(at in hookSlots)) hookSlots[at] = typeof initial === 'function' ? initial() : initial
+    return [
+      hookSlots[at],
+      (next) => { hookSlots[at] = typeof next === 'function' ? next(hookSlots[at]) : next },
+    ]
+  },
+  useEffect: (run) => { pendingEffects.push(run) },
+  useMemo: (compute) => compute(),
+  useRef: (initial) => {
+    const at = hookIndex++
+    if (!(at in hookSlots)) hookSlots[at] = { current: initial ?? null }
+    return hookSlots[at]
+  },
   useCallback: (fn) => fn,
-  useRef: () => ({ current: undefined }),
-  useMemo: (fn) => fn(),
 }
 const CONTAINER_ROOT = '/workspaces/ShutterSeek'
 let captured = null
@@ -365,6 +386,132 @@ check('the title is the basename', registered.title(addressOf(CONTAINER_ROOT + '
 
 check('the pane body registers under the type id, not the kind', paneBody?.registration?.key === registered.id, JSON.stringify(paneBody?.registration))
 check('through an injected slot, so a late declaration still lands', injected.includes('sidebar.right.pane.tab'))
+
+console.log('\n-- the tab hands its drawing to the SHIPPED viewer --')
+// The point of the whole design: only the FETCH is this plugin's. Line numbers, the per-line
+// DOM and the addressed-line highlight come from the document body the harness already ships,
+// reached through `sidebar.right.tab.document` — a slot whose `DocumentContent` owner prop is
+// part of its documented contract. So the assertions below are about the CONTRACT we hand it,
+// not about markup we drew.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 5))
+/** Render the body the way the slot would, then let its fetch settle and render again. */
+async function renderBody(component, props) {
+  hookSlots = []
+  hookIndex = 0
+  pendingEffects = []
+  component(props)
+  for (const run of pendingEffects) run()
+  await settle()
+  hookIndex = 0
+  pendingEffects = []
+  return component(props)
+}
+const findByProp = (node, key) => {
+  if (node === null || typeof node !== 'object') return undefined
+  if (node.props !== undefined && node.props[key] !== undefined) return node
+  for (const child of node.children ?? []) {
+    const found = findByProp(child, key)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+const SHIPPED_SLOT = 'sidebar.right.tab.document'
+const registry = {
+  // Deliberately NOT builtin-first, and deliberately carrying a builtin that DOES claim an
+  // extension: the fallback is the catch-all builtin, not whichever builtin registered first,
+  // and a snapshot where those coincide would make the two indistinguishable.
+  getSnapshot: () => [
+    { id: 'external/go', priority: 'extension', extensions: ['go'], title: () => 'go' },
+    // Present but NOT matching a `.go` or an extensionless path. The shipped ranking drops an
+    // implementation with no matching extension outright — without that drop, its higher band
+    // would let it take a path it cannot render.
+    { id: 'external/ts', priority: 'extension', extensions: ['ts'], title: () => 'ts' },
+    // A builtin that claims one extension: it may render `.go` as a last resort, but an
+    // EXTERNAL implementation of the same extension outranks it.
+    { id: 'builtin/go', priority: 'builtin', extensions: ['go'], title: () => 'go' },
+    { id: 'builtin/text', priority: 'builtin', extensions: [], title: () => 'text' },
+    // Two implementations both matching `x.d.ts`. The LONGER extension is the more specific
+    // claim and has to win, so this pair is what pins the length tie-break.
+    { id: 'external/dts', priority: 'extension', extensions: ['d.ts'], title: () => 'dts' },
+  ],
+}
+const slotCalls = []
+const renderSlot = (name, props, options) => {
+  slotCalls.push({ name, props, options })
+  return { type: 'shipped-body', props, children: [] }
+}
+const goPath = CONTAINER_ROOT + '/internal/service/cache.go'
+const fileText = 'package main\n\nfunc main() {}\n'
+/** Stub the route for one render, and always put the real `fetch` back afterwards. */
+async function withFileFetch(run) {
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ text: fileText, remotePath: goPath, bytes: fileText.length, truncated: false }),
+  })
+  try {
+    return await run()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+const bodyProps = {
+  useTabInfo: () => ({ tab: { contentId: addressOf(goPath) } }),
+  renderSlot,
+  documentPreviews: registry,
+}
+const tree = await withFileFetch(() => renderBody(paneBody.component, bodyProps))
+
+check('it renders into the shipped document body slot', slotCalls[0]?.name === SHIPPED_SLOT, JSON.stringify(slotCalls.map((c) => c.name)))
+check(
+  'with a DocumentContent the slot contract declares',
+  slotCalls[0]?.props?.content?.kind === 'text' && Array.isArray(slotCalls[0]?.props?.content?.pages),
+  JSON.stringify(slotCalls[0]?.props?.content)?.slice(0, 120),
+)
+// The body splits each page on newlines, so the count it is given has to be that split's own
+// length — a trailing newline makes this line count one MORE than the visible lines.
+check(
+  'the page carries the line count the body splits on',
+  slotCalls[0]?.props?.content?.pages?.[0]?.lines === fileText.split('\n').length,
+  String(slotCalls[0]?.props?.content?.pages?.[0]?.lines),
+)
+check('and the offset its line numbers start at', slotCalls[0]?.props?.content?.pages?.[0]?.offset === 0, String(slotCalls[0]?.props?.content?.pages?.[0]?.offset))
+check('carrying the file text', slotCalls[0]?.props?.content?.text === fileText)
+check('dispatching to the implementation matched by EXTENSION', slotCalls[0]?.options?.entryKey === 'external/go', String(slotCalls[0]?.options?.entryKey))
+check('with the tab hook the body calls inside itself', typeof slotCalls[0]?.options?.hookContext === 'function')
+check('and a fallback, so a missing occupant is not a blank pane', slotCalls[0]?.options?.fallback !== undefined)
+check('opening wrapped, as the shipped viewer does', slotCalls[0]?.props?.wrap === true)
+check('with a scrollport the body may address', slotCalls[0]?.props?.scrollportRef !== undefined)
+const scroller = findByProp(tree, 'data-textpreview-wrap')
+check('and a scrollport that is the one that wraps', scroller?.props?.className?.includes('dshDc_fileWrapped') === true, String(scroller?.props?.className))
+check('offered as a toggle in the header', findByProp(tree, 'aria-pressed') !== undefined)
+
+// A path with no extension match falls back the way the shipped ranking does, rather than
+// dispatching to whatever happened to be registered first.
+const plainCalls = []
+const plainBody = await withFileFetch(() => renderBody(paneBody.component, {
+  ...bodyProps,
+  useTabInfo: () => ({ tab: { contentId: addressOf(CONTAINER_ROOT + '/README') } }),
+  renderSlot: (name, props, options) => { plainCalls.push({ name, props, options }); return null },
+}))
+check('a path with no extension match is still drawn', plainCalls.length === 1, String(plainCalls.length))
+check('and falls back to the builtin implementation', plainCalls[0]?.options?.entryKey === 'builtin/text', String(plainCalls[0]?.options?.entryKey))
+
+// Two implementations can match one path. The shipped ranking takes the LONGER extension, which
+// is the more specific claim, and that order must survive being reproduced here.
+const typedCalls = []
+await withFileFetch(() => renderBody(paneBody.component, {
+  ...bodyProps,
+  useTabInfo: () => ({ tab: { contentId: addressOf(CONTAINER_ROOT + '/frontend/src/api/client.d.ts') } }),
+  renderSlot: (name, props, options) => { typedCalls.push({ name, props, options }); return null },
+}))
+check('the LONGEST matching extension wins', typedCalls[0]?.options?.entryKey === 'external/dts', String(typedCalls[0]?.options?.entryKey))
+
+// And a deployment that never mounted the shipped previewer still shows the file, because the
+// fallback is this plugin's own <pre> rather than an empty slot.
+const noRegistry = await withFileFetch(() => renderBody(paneBody.component, { ...bodyProps, documentPreviews: undefined }))
+check('with no previewer registered the text is still drawn here', findByProp(noRegistry, 'className') !== undefined)
 
 console.log('')
 if (failures > 0) {

@@ -248,6 +248,16 @@ effects. The container and your SSH access to it are the boundary.
   inside the container is not collapsed.
 * Skill discovery walks the **local** mount point with `node:fs` and sees an empty directory; only
   skill bodies load through `ctx.fs`.
+* **A routed session reaches the host, not only the container.** Three ways: the four `devc_host_*`
+  tools; any mirrored path whose folder has no dev container, which the shadowed `bash`/`read`/
+  `write` then run on the host; and the transport itself, which is `ssh <host>` with your own
+  configuration — so the rights are that ssh user's rights. Host commands are **not** sandboxed:
+  the routing executor's remote branch goes straight to the channel and never reaches the local
+  sandboxed executor, which only ever sees local paths.
+* Tools that name a host are checked against the roster your profile offers (`~/.ssh/config` plus
+  `extraHosts` plus the configured `sshHost`), the same list the workspace picker shows. A
+  destination that starts with `-` is refused outright: ssh parses such an argument as an option,
+  and `-oProxyCommand=…` would run a command on **this** machine instead.
 * Container-side writes bypass the local sandbox by design. Nothing this plugin does changes
   local-path behaviour, and the local branch of a routed session is the shipped implementation
   itself.

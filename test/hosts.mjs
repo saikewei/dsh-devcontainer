@@ -91,5 +91,114 @@ if (real.length === 0) {
   check('no pattern leaked into the roster', real.every((entry) => !/[*?!]/.test(entry.alias)))
 }
 
+console.log('\n-- what may become an ssh DESTINATION --')
+// Two gates stand between a caller-supplied string and the ssh binary, and they answer
+// different questions. The roster says WHICH MACHINES this profile offers; the transport says
+// that no string may look like an option at all. `browse.js` already documents the second
+// threat for its own route ("a leading `-` is parsed as an OPTION — `-oProxyCommand=…` runs a
+// local command"); these assertions are the same defence on the paths that had none.
+const { existsSync, mkdtempSync, writeFileSync, rmSync, mkdirSync } = await import('node:fs')
+const { tmpdir } = await import('node:os')
+const { join } = await import('node:path')
+const { pickRosterHost } = await import('../lib/index.js')
+const { RemoteTransport } = await import('../lib/transport.js')
+
+const gateDir = mkdtempSync(join(tmpdir(), 'dsh-hostgate-'))
+try {
+  const sshConfig = join(gateDir, 'config')
+  writeFileSync(sshConfig, 'Host nas\n  HostName 192.0.2.10\nHost eu\n  HostName 192.0.2.20\n')
+  const gateCfg = { ...CONFIG, sshConfigPath: sshConfig, sshHost: 'nas', extraHosts: ['declared-only'] }
+
+  check('an alias from the config is accepted', (await pickRosterHost(gateCfg, 'eu')) === 'eu')
+  check('the configured host is accepted', (await pickRosterHost(gateCfg, 'nas')) === 'nas')
+  check('no argument means the configured host', (await pickRosterHost(gateCfg, undefined)) === 'nas')
+  check('blank means the configured host too', (await pickRosterHost(gateCfg, '  ')) === 'nas')
+  check('an extraHosts entry is accepted', (await pickRosterHost(gateCfg, 'declared-only')) === 'declared-only')
+  check('surrounding space is trimmed, not dialled', (await pickRosterHost(gateCfg, ' eu ')) === 'eu')
+
+  await pickRosterHost(gateCfg, 'somewhere-else').then(
+    () => check('a machine nobody offered is refused', false, 'it was accepted'),
+    (error) => check('a machine nobody offered is refused', /unknown host/.test(String(error.message)), String(error.message)),
+  )
+  await pickRosterHost(gateCfg, '-oProxyCommand=touch /tmp/x').then(
+    () => check('an ssh OPTION is refused as a host', false, 'it was accepted'),
+    (error) => check('an ssh OPTION is refused as a host', /unknown host/.test(String(error.message)), String(error.message)),
+  )
+
+  // An unreadable config is not an empty roster: the configured host still answers, and the
+  // refusal says why rather than pretending the name was never offered.
+  const brokenCfg = { ...gateCfg, sshConfigPath: join(gateDir, 'no-such-config') }
+  check('an unreadable config still offers the configured host', (await pickRosterHost(brokenCfg, 'nas')) === 'nas')
+  await pickRosterHost(brokenCfg, 'eu').then(
+    () => check('but not an alias only the config knew', false, 'it was accepted'),
+    (error) => check('but not an alias only the config knew', /could not be read/.test(String(error.message)), String(error.message)),
+  )
+
+  // The transport is the last stop before argv, so it refuses independently of the roster. A
+  // fake ssh on PATH records what it was handed, and the assertion is that a refused
+  // destination hands it NOTHING: a spawn that never happens cannot be talked into running a
+  // ProxyCommand, whichever caller produced the string.
+  const bin = join(gateDir, 'bin')
+  mkdirSync(bin)
+  const marker = join(gateDir, 'spawned')
+  writeFileSync(join(bin, 'ssh'), '#!/bin/sh\necho "$@" > ' + JSON.stringify(marker) + '\nexit 0\n', { mode: 0o755 })
+  const savedPath = process.env.PATH
+  process.env.PATH = bin + ':' + savedPath
+  try {
+    const refused = await new RemoteTransport({ get: () => undefined }, '-oProxyCommand=touch /tmp/pwned', undefined).collect('true')
+    check('the transport refuses a destination that looks like an option', /starts with "-"/.test(refused.stderr), JSON.stringify(refused))
+    check('and never spawns ssh at all', !existsSync(marker), 'ssh was reached')
+    const plain = await new RemoteTransport({ get: () => undefined }, 'nas', undefined).collect('true')
+    check('while an ordinary destination still reaches ssh', plain.exitCode === 0 && existsSync(marker), JSON.stringify(plain))
+  } finally {
+    process.env.PATH = savedPath
+  }
+} finally {
+  rmSync(gateDir, { recursive: true, force: true })
+}
+
+console.log('\n-- a host tool that FAILS still answers with a message --')
+// `registerHostTools` reports through a CURRIED helper — `report(channel)(error)` — and four of
+// its five catches called it once, so a failing tool returned the inner arrow instead of text.
+// The registry then said "returned invalid output: value is not lossless JS", which names
+// neither the tool nor the reason. Driving every host tool through its own failure path is the
+// only assertion that catches it, because the happy paths all work.
+const { Context } = await import('@deepseek-ai/cordis')
+const gateApp = new Context()
+const pluginOf = (m) => (typeof m.default === 'function' ? m.default : (m.default?.apply ? m.default : m))
+gateApp.plugin(pluginOf(await import('@deepseek-ai/dsh-system-prompt')))
+gateApp.plugin(pluginOf(await import('@deepseek-ai/dsh-subprocess-local')))
+gateApp.plugin(pluginOf(await import('@deepseek-ai/dsh-tools')))
+await new Promise((resolve) => setTimeout(resolve, 400))
+gateApp.plugin(await import('../lib/index.js'), {
+  ...CONFIG,
+  sshHost: 'nas',
+  extraHosts: [],
+  sshConfigPath: join(gateDir ?? '/nonexistent', 'config'),
+})
+await new Promise((resolve) => setTimeout(resolve, 600))
+for (const [tool, args] of [
+  ['devc_host_exec', { command: 'true', host: 'nowhere-else' }],
+  ['devc_host_read', { path: '/etc/hostname', host: 'nowhere-else' }],
+  ['devc_host_write', { path: '/tmp/x', content: 'x', host: 'nowhere-else' }],
+  ['devc_host_ls', { path: '/tmp', host: 'nowhere-else' }],
+  ['devc_containers', { host: 'nowhere-else' }],
+]) {
+  const definition = gateApp.tools.get(tool)
+  if (definition === undefined) { check(`${tool} is registered`, false); continue }
+  let value
+  try {
+    value = await definition.execute(args, { signal: new AbortController().signal })
+  } catch (error) {
+    value = error
+  }
+  check(
+    `${tool} answers its failure with text`,
+    typeof value === 'string' && value.includes('unknown host'),
+    typeof value + ' ' + String(value).slice(0, 60),
+  )
+}
+gateApp.stop?.()
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))
 process.exit(failures === 0 ? 0 : 1)

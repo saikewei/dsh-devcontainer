@@ -603,6 +603,105 @@ shell（`dsh-web-frontend`）提供，是任何客户端 bundle 都能按名字 
 | 技能发现 | `node:fs` 遍历本地挂载点 |
 | **`fs-observation-policy`** | 它只听全局 `fs/*` 事件；路由读写不经过 `ctx.fs`，**策略被静默旁路**——这是安全相关分歧，不是显示问题 |
 
+## 附七：宿主边界与 ssh 目标的两道闸（2026-09）
+
+有人问"容器工作区是不是也有权限执行容器外的宿主机命令"。查下来答案是**是，而且有三条路**——
+顺带发现工具侧的 ssh 目标**完全没有闸门**。
+
+### 三条到宿主的路
+
+1. **`devc_host_*` 四个工具**（`hostTools: true` 默认开）。它们注册在插件 ctx 上，是**全局**的——
+   连本地会话也有。本会话就是活证据：cwd 是本地仓库，工具列表里照样有 `devc_host_exec`。
+2. **路由本身**：`worlds.locate()` 对镜像下解析成 `world: 'host'` 的路径，让被影子化的
+   `bash`/`read`/`write` 直接在宿主上执行。容器工作区只是让 cwd 落在容器那棵子树里，
+   **没有把宿主路径排除掉**——`capabilityText` 也是这么告诉模型的。
+3. **传输层就是 `ssh <host>`**，用操作者自己的 ssh 配置，所以权限 = 那个 ssh 用户的权限。
+
+### 沙箱为什么不拦
+
+`RoutingBashExecutor extends SandboxBashExecutor`，但 `run()` 里：
+
+```js
+const marked = spec[REMOTE_WORLD]
+if (marked === undefined) return super.run(spec)   // 只有本地路径走到这里
+// 远端分支直接 channel.request(...)，从不调用 super.run()
+```
+
+所以 `dsh-bash-sandbox` / `fs-sandbox` **只看得到本地路径**。远端（容器与宿主）命令一律不过沙箱。
+
+### 发现的问题：工具侧的 ssh 目标是直通的
+
+`browse.js` 的注释明确把 `-oProxyCommand=…` 列为威胁，并为此加了 roster 校验：
+
+> It becomes an argv element for the `ssh` binary, where a leading `-` is parsed as an OPTION —
+> `-oProxyCommand=…` runs a local command
+
+但**工具侧没有这道防御**：`registerHostTools` 的 `pickHost` 是直通，`RemoteTransport.#destination()`
+只拒绝空串。实测（假 ssh，只回显 argv，未真执行）：
+
+```
+ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ConnectTimeout=10 \
+    -oProxyCommand=touch /tmp/… true
+```
+
+真实 ssh 会把 `-oProxyCommand=…` 当选项解析，`ProxyCommand` 在**本机**执行。也就是说：
+**一个工具参数就能在本机执行任意命令**，不需要 `bash`。
+
+同一个字符串还有第二条来源：镜像路径的第一段就是机器名（`mountRoot/<host>/…`），
+而那个名字同样可以是 `-oProxyCommand=…` 形状的目录名。**两条来源都被同一个闸门覆盖。**
+
+### 修法：两道闸，各管一件事
+
+* **`RemoteTransport.#destination()`** —— 拒绝以 `-` 开头的目标。这是**安全**闸，放在 argv 之前
+  的最后一步，所以不管字符串来自工具参数还是镜像路径都被覆盖。选择**拒绝**而不是净化：
+  没有任何合法 ssh 别名以短横开头，而 ssh 也没有 `--` 来终止自己的选项解析。
+* **`pickRosterHost(cfg, requested)`** —— 工具参数必须落在本 profile 提供的名单里
+  （`~/.ssh/config` + `extraHosts` + 配置的 `sshHost`），也就是工作区选择器展示的同一份。
+  这是**策略**闸。名单读不出来时**不当成空名单**：配置的 host 仍然作答，其余拒绝并附上原因。
+
+接进 `pickRosterHost` 的有六处：`devc_host_exec/read/write/ls`、`devc_containers`、`devc_forward`
+（顺带确认了 `devc_forward` 的 `host` 参数确实生效，不是被忽略）。`devc_host_exec` 原先在
+`catch` 里**又解析一次 host**，host 非法时那一次自己会抛并逃出处理器——改成持有已解析的 channel。
+
+### 刻意**没有**改的
+
+镜像路径里的机器名**不做 roster 校验**。`mountRoot` 的设计就是"机器名是第一段，所以任何宿主目录
+都能成为工作区，不需要登记映射"；加校验等于把这个特性删掉。那个名字不在 ssh 配置里时，ssh 自己
+会失败、判定抛错、调用**大声失败**——与"失败不是答案"的既有原则一致。真正危险的形态（看起来像选项）
+已经由上面第一道闸挡住。
+
+### 顺带发现：四个宿主工具的**报错路径从来没工作过**
+
+改这条闸的时候真机跑了一遍，`devc_containers` 的失败返回是：
+
+```
+tool "devc_containers" returned invalid output: value is not lossless JS
+```
+
+`registerHostTools` 里的 `report` 是**柯里化**的：
+
+```js
+const report = (channel) => (error) => '[dsh-devcontainer error] ' + ...
+```
+
+而它的五个 catch 里有**四个**写成 `report(error)`——单次调用返回的是**内层箭头函数**，
+于是工具失败时返回一个函数，注册表序列化失败，报出一条既不说工具也不说原因的错。
+只有 `devc_host_exec` 用的是正确的 `report(channelFor(...))(error)`（而它在 catch 里又解析一次
+host，host 非法时那一次自己会抛并逃出处理器）。
+
+这是**既有 bug**，不是这次改出来的；是这次改动让这条路径更容易被走到才暴露。五个 catch 现在统一
+持有已解析的 channel 并走 `report(channel)(error)`；`devc_containers` 解析的是 target 而非 channel，
+显式写 `report(undefined)(error)`（helper 本来就容忍）。
+
+`test/hosts.mjs` 新增 5 条断言，把**每个**宿主工具都推过它自己的失败路径——happy path 全绿，
+这是唯一能咬住它的写法。
+
+### 验收（ssh 目标）
+
+`test/hosts.mjs` 新增 13 条断言：名单的接受/拒绝/trim/空参数语义、配置读不出来时的行为，
+以及用一个**假 ssh 记录 argv**证明被拒的目标**根本没有 spawn**——没发生的 spawn 不可能被执行成
+ProxyCommand。5 条变异全部咬住。
+
 ## 附：本次产出文件
 
 | 文件 | 说明 |

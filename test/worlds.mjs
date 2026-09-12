@@ -132,6 +132,25 @@ check(
 )
 check('an unrelated container path is still not a container path', where(derived, '/workspaces/Third') === 'local')
 
+// `knownRoots` is published to the browser, which prefix-tests it to decide whether an address
+// is a container file. The configured `containerRoot` and the resolved mapping for the SAME
+// folder are seeded independently — deliberately, so configuration answers before discovery —
+// so a caller listing them would otherwise see the same root twice.
+const deduped = new Worlds({ sshHost: DEFAULT_HOST, containerRoot: CONTAINER_ROOT, mountRoot: MOUNT_ROOT })
+deduped.setResolved([
+  { localPrefix: MOUNT_ROOT + '/' + DEFAULT_HOST + '/volume1/docker/proj', host: DEFAULT_HOST, world: 'container', container: 'proj-dev', remotePath: CONTAINER_ROOT },
+])
+check(
+  'the configured root and the resolved one are reported ONCE',
+  deduped.knownRoots.filter((entry) => entry.path === CONTAINER_ROOT).length === 1,
+  JSON.stringify(deduped.knownRoots),
+)
+check(
+  'and the surviving entry still names its machine',
+  deduped.knownRoots.every((entry) => entry.host === DEFAULT_HOST && entry.path !== '/'),
+  JSON.stringify(deduped.knownRoots),
+)
+
 console.log('\n-- an undecided mirror folder is a PLACEHOLDER, not an answer --')
 // The failure this guards: `locate` answers a mirrored path no decision covers yet with
 // `host`, and acting on that answer runs a container command on the NAS — right machine,

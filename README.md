@@ -89,6 +89,27 @@ afterwards and shared with every other call to the same tree. If the machine can
 call **fails and says so**, rather than quietly running on the host: same machine, wrong toolchain,
 wrong paths, and no error to notice.
 
+### Opening a changed file
+
+The "Files changed" row a finished turn ends with records the `file_path` the model passed to
+`write`/`edit`. In a routed session that is a **container** path — and every shipped surface that
+opens one goes through `workspaceFiles` → `ctx.fs` → this plugin's empty local stand-in, so those
+chips resolved nowhere. Registering a second sidebar tab type for them is what gives them somewhere
+to land:
+
+* It claims `dsh-resource://file/session/**` in the **`extension`** band, which outranks the shipped
+  text previewer's `fallback`, and vetoes any address that is not under a root this profile routes.
+  A local file therefore still opens in the shipped previewer, untouched.
+* The tab reads through `GET /dsh-devcontainer/file`, which resolves the path to a machine and a
+  container with the same `worlds.locate` the tools use. The browser names no machine and no
+  container, so nothing it sends has to be trusted.
+* Text only, and only the first 2 MB of it. A longer file is served **truncated** rather than
+  refused, because for a log the head is the useful answer; a binary file is refused with that
+  reason rather than rendered as mojibake.
+
+The same mechanism covers the file references your closing prose makes in inline code, since both
+surfaces open through one `openFile`.
+
 ### Adding a workspace
 
 "Add workspace" opens a dialog with two tabs:
@@ -219,21 +240,27 @@ effects. The container and your SSH access to it are the boundary.
 * Container-side writes bypass the local sandbox by design. Nothing this plugin does changes
   local-path behaviour, and the local branch of a routed session is the shipped implementation
   itself.
-* Only the seven tools route. The sidebar file browser, skill discovery and other consumers of
+* Only the seven tools route. The sidebar file tree, skill discovery and other consumers of
   `ctx.fs` still see the local stand-in for a mirrored workspace — the price of never replacing a
   global service. `devc_read`/`devc_ls`/`devc_glob`/`devc_grep` reach inside the container instead.
+  Opening a **changed file** is the one exception, because it does not go through `ctx.fs`: the tab
+  described above serves it from the container over this plugin's own route.
+* `present` declarations and the `@` file picker resolve through the local `ctx.fs`, so neither can
+  name a container file.
+* Routed reads and writes do not pass through `ctx.fs`, so the read-before-write observation policy
+  never sees them. It is not a guard for container paths.
 * A forwarded connection's bytes cross the resident channel base64-encoded inside JSON lines —
   about a third more traffic than the payload, sharing one pipe with the file tools. That is the
   right trade for a dev server and the wrong one for moving large files.
 
 ## Development
 
-Ten of the fifteen suites are container-free and run anywhere:
+Eleven of the sixteen suites are container-free and run anywhere:
 
 ```sh
 npm install
 npm run test:unit       # no target required
-npm test                # all fifteen; the rest need a live dev container
+npm test                # all sixteen; the rest need a live dev container
 ```
 
 Point the integration ones at your target with `cp test/config.example.mjs test/config.local.mjs`

@@ -471,6 +471,91 @@ helper 本来就在容器里跑，于是让它 `net.connect` 目标端口，字�
 - 转发不跨进程存活。开机要恢复的端口写进配置的 `forward` 列表，或打开 `forwardAuto`。
 - 自动转发默认关闭：一条转发占的是操作者机器上的端口。
 
+## 附六：前端打不开被改动的文件（2026-09）
+
+### 症状
+
+路由会话里 agent 改完文件，前端"本轮文件改动"的 chip 点不动——不报错，也不出内容。
+
+### 根因
+
+不是路径没被"引导"，而是**那条链路根本不经路由**。真实会话日志里，`read`/`write`/`edit` 收到的
+`file_path` 是 `/workspaces/ShutterSeek/internal/service/cache.go`，即容器拼法。而：
+
+```
+chip 点击 → openFile(path) → 地址 dsh-resource://file/session/<sid>/<path>
+          → 右侧栏文本预览 tab → remote.workspaceFiles.readAll
+          → dsh-api-workspace-files 的 this.ctx.fs   ← 全局、未路由
+          → 本机磁盘 → 那个路径在本机不存在 → 404
+```
+
+我们的路由在**工具层**，只遮蔽七个工具。`ctx.fs` 是全局单例，浏览器侧的一切文件读取都走它，
+看到的是空的本地替身。
+
+**决定性约束**：`dsh-client-ui-deliverables` 的 `mutationPath(name, argsRaw)` 直接
+`JSON.parse` **模型的原始参数**取 `args.file_path`，全文**不引用 `locations`**。
+所以 host 侧改写工具输出、或让工具报告别的路径，都改不了这一行显示什么。方向只能是反向的：
+**让前端学会打开容器路径**。
+
+### 接缝（均已读源码确认）
+
+`dsh-client-ui-sidebar-right` 用 `ctx.reflect.provide("sidebarRightTabs", …)` 公开注册表，
+且已有两个第三方（`documentpreview`、`files`）在用：
+
+* 注册：`ctx.sidebarRightTabs.register({id, kind, patterns, priority, canOpen, title})`，`ctx.effect` 内可回收。
+* 解析（`candidates(address)` 注释原文）：*ranked by priority band, then by the length of the
+  pattern that matched, then by registration order*，且**跨所有 kind** 遍历。
+* 档位：`RANKS = {extension: 3, builtin: 2, fallback: 1}`，默认 `extension`；文本预览是 `fallback`。
+* **kind 不能共用**：`coexists()` 明确 *a fallback shares its kind with nothing*，抢 `kind:"text"`
+  会直接抛。所以必须用独立 kind——而跨 kind 遍历让这没有副作用。
+* 地址语法：`dsh-resource://file/session/<sid>/<encodePath(path)>`。
+* pane 的 key 是 definition 的 **`id`**（不是 kind）；body 直接注册为 pane occupant，
+  不需要 `children` 子槽（那是给"一个类型多种 viewer"用的）。
+
+### 做法
+
+1. **Host**：`GET /dsh-devcontainer/file`。路径**自己就能定目标**——`worlds.locate` 的最后两个循环
+   已经把 `containerRoot` 当作已知根，所以原始容器拼法能解析回 `{host, world, container}`。
+   浏览器不指定机器也不指定容器，因此它送来的东西无需被信任。
+   先 `stat` 再读（`read` 会整文件载入）；超 2 MB 走 `read_b64` 有界窗口并标 `truncated`；
+   二进制 415、不存在 404、通道失败 502——各自独立文案。
+2. **Client**：注册 tab 类型，`kind` 独立、`priority: 'extension'`、`canOpen` 用**同一个根列表**
+   否决非容器路径。根列表由 `/config` 的 `knownRoots` 提供，保证两侧不会各说各话。
+3. 客户端若 `canOpen` 返回 false，地址回落到随包文本预览器——**本地会话行为逐字节不变**。
+
+### 踩到的坑
+
+`containerPathOfAddress` 第一版直接把 `rest.slice(separator)` 解码，结果绝对路径得到**双斜杠**
+（`encodePath` 保留首个空段），前缀比较差一个斜杠，容器路径被误判为本地。
+源码级断言抓不到这个——测试因此**真正加载了 bundle**（桩一个四方法的 React，`apply()` 不渲染），
+对 `canOpen` 做行为断言。这是本轮唯一由测试暴露的设计错误。
+
+另外 `coexists` 的 `fallback` 互斥是**抛异常**而不是"低优先级"，读起来像可以共存；注释里那句
+"shares its kind with nothing" 才是权威。
+
+### 真机验证抓到的两个 bug（单测没覆盖）
+
+1. **超限二进制绕过了二进制守卫。** helper 只在整文件 `read` 上拒绝二进制；超 2 MB 走的是
+   `read_b64` 窗口，那条路径**没有任何守卫**。实测容器里 48 MB 的 `server` ELF 返回 **200 +
+   一屏乱码**——正是守卫存在的理由。修法：对窗口用同一个判据（NUL 字节）。单测补了
+   "超大二进制 → 415 且不携带 text"。
+2. **`knownRoots` 重复。** `#reindex` 故意同时种入配置的 `containerRoot` 与解析出的同名映射
+   （配置必须能在任何发现发生前作答），于是对外暴露的列表里同一个根出现两次。`locate` 只需要
+   命中，无所谓；但把列表转发给浏览器就不对了。在 getter 里按 `host|path` 去重。
+
+两个都是**只有在真实容器上打这条路由**才会暴露的——`/tmp` 里造个假 channel 不会。这是本轮
+最值得记的一条：host 路由的验收必须打到真机上。
+
+### 仍未修（同类"路径被当作本地"）
+
+| 面 | 原因 |
+| --- | --- |
+| 侧边栏**文件树** | 根就是空替身，需要目录代理 + 懒物化 |
+| `present` 工具 | 声明经 Session 文件系统解析 |
+| `@` 文件引用 | `dsh-file-reference-local` 本地解析 |
+| 技能发现 | `node:fs` 遍历本地挂载点 |
+| **`fs-observation-policy`** | 它只听全局 `fs/*` 事件；路由读写不经过 `ctx.fs`，**策略被静默旁路**——这是安全相关分歧，不是显示问题 |
+
 ## 附：本次产出文件
 
 | 文件 | 说明 |
@@ -481,7 +566,9 @@ helper 本来就在容器里跑，于是让它 `net.connect` 目标端口，字�
 | `lib/discover.js` | dev container 发现：label 索引、容器描述、候选文件夹链 |
 | `lib/route.js` | 世界判定 resolver + 会话级分类（本地/宿主/容器） |
 | `lib/search.js` | `glob`/`grep`：容器内走通道，本地走随包 ripgrep |
-| `lib/browse.js` + `lib/client.js` | 工作区选择器（远程/本机两个选项卡） |
+| `lib/browse.js` + `lib/client.js` | 工作区选择器（远程/本机两个选项卡）、端口面板、容器文件预览 tab |
+| `test/browse.mjs` | 选择器 + `/file` 路由的单元测试（伪通道，无容器） |
+| `test/client.mjs` | 客户端 bundle 的加载式断言（桩 React，含 `canOpen` 行为） |
 | `examples/profile.cordis.patch.yml` | profile 加载层模板 |
 | `lib/channel.js` | 常驻 helper 通道：帧协议、握手校验、终态清理、通知帧与背压 |
 | `lib/ports.js` | 端口转发：监听端口解析 + 转发管理器（每条连接一个 relay） |

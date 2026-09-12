@@ -55,6 +55,22 @@ function callbackBody(text, name) {
   return null
 }
 
+/** The brace-balanced body of a named `function`/`async function` declaration. */
+function functionBody(text, name) {
+  const at = text.indexOf('function ' + name + '(')
+  if (at === -1) return null
+  const open = text.indexOf('{', at)
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '{') depth++
+    else if (text[i] === '}') {
+      depth--
+      if (depth === 0) return text.slice(open, i + 1)
+    }
+  }
+  return null
+}
+
 console.log('-- the style block is theme-driven --')
 const cssArray = source.match(/const CSS = \[([\s\S]*?)\]\.join/)
 check('the stylesheet is declared once as a joined array', cssArray !== null)
@@ -147,7 +163,22 @@ check(
   'apply probes for the container API before claiming the hole',
   /async function apply\(ctx\) \{\s*\n\s*if \(!\(await containerApiMounted\(\)\)\) return/.test(source),
 )
-check('only a definitive 404 counts as absent', /return response\.status !== 404/.test(source))
+// The rule is "ONLY a 404 means absent", and it is asserted against the function's own body
+// rather than against one spelling of the expression. An unauthorized or failed probe must
+// keep the occupant, because the deployment's own chooser is still the only thing that can
+// render a `browse` backend.
+const mountedBody = functionBody(source, 'containerApiMounted') ?? ''
+check(
+  'only a definitive 404 counts as absent',
+  (mountedBody.match(/return false/g) ?? []).length === 1
+    && /if \(response\.status === 404\) return false/.test(mountedBody),
+  mountedBody,
+)
+check(
+  'and a served profile answers true on every other status',
+  (mountedBody.match(/return true/g) ?? []).length === 2,
+  mountedBody,
+)
 check('an ambiguous failure keeps the occupant', /catch \(problem\) \{\s*\n\s*return true\s*\n\s*\}/.test(source))
 const rising = resets[0] ?? ''
 check(
@@ -214,6 +245,95 @@ check(
   applyBody.indexOf('containerApiMounted') !== -1 && applyBody.indexOf('sidebar.panellist') > applyBody.indexOf('containerApiMounted'),
 )
 check('and is injected rather than registered blind', applyBody.includes("inject('sidebar.panellist'") && applyBody.includes("'main'"))
+
+console.log('\n-- the container file tab claims the right addresses, and only those --')
+// This section LOADS the bundle rather than reading it. The module only ever calls
+// `require('react')`, and `apply()` renders nothing, so a four-method stub is the whole
+// runtime it needs — and in exchange the address parser and the `canOpen` veto are exercised
+// for real. A source-level assertion here would pass on a prefix comparison that is off by a
+// slash, which is exactly the mistake that would send a local file to a dead tab.
+const REACT_STUB = {
+  createElement: () => null,
+  useState: () => [undefined, () => {}],
+  useEffect: () => {},
+  useCallback: (fn) => fn,
+  useRef: () => ({ current: undefined }),
+  useMemo: (fn) => fn(),
+}
+const CONTAINER_ROOT = '/workspaces/ShutterSeek'
+let captured = null
+globalThis.window = { __ModuleLoader__: { load: (definition) => { captured = definition } } }
+await import('../lib/client.js')
+check('the bundle registers itself with the loader', captured !== null && captured.id === 'dsh-devcontainer')
+
+const client = captured.factory((name) => {
+  if (name === 'react') return REACT_STUB
+  throw new Error('unexpected require: ' + name)
+})
+check('and exports an apply plus its service list', typeof client.apply === 'function' && Array.isArray(client.inject))
+check('declaring the tab registry it consumes', client.inject.includes('sidebarRightTabs'), JSON.stringify(client.inject))
+
+const originalFetch = globalThis.fetch
+globalThis.fetch = async () => ({
+  status: 200,
+  ok: true,
+  json: async () => ({ knownRoots: [{ host: 'my-nas', path: CONTAINER_ROOT }] }),
+})
+
+const injected = []
+let registered = null
+let paneBody = null
+const fakeCtx = {
+  slots: {
+    inject: (name, callback) => {
+      injected.push(name)
+      // The pane callback is the one that carries the body registration, so drive it; the
+      // others take the real code path but need no slot tree behind them.
+      if (name === 'sidebar.right.pane.tab') callback()
+      return () => {}
+    },
+    register: (registration, component) => {
+      paneBody = { registration, component }
+      return () => {}
+    },
+  },
+  uiWorkspace: { pickDirectory: () => {} },
+  sidebarRightTabs: { register: (definition) => { registered = definition; return () => {} } },
+}
+await client.apply(fakeCtx)
+globalThis.fetch = originalFetch
+
+check('a tab type is registered', registered !== null)
+check(
+  'whose kind is NOT the shipped text previewer\'s',
+  registered !== null && registered.kind !== 'text',
+  'a fallback kind shares itself with nothing, so the registry would throw',
+)
+check('in the extension band, which outranks the fallback', registered.priority === 'extension', String(registered.priority))
+check('with an id of its own', typeof registered.id === 'string' && registered.id !== '', String(registered.id))
+check('matching the sidebars file-address scheme', registered.patterns?.includes('dsh-resource://file/session/**'), JSON.stringify(registered.patterns))
+
+const addressOf = (path) =>
+  'dsh-resource://file/session/session-1/' + path.split('/').map(encodeURIComponent).join('/')
+check('a container address opens here', registered.canOpen(addressOf(CONTAINER_ROOT + '/internal/service/cache.go')) === true)
+check('the root itself does not', registered.canOpen(addressOf(CONTAINER_ROOT)) === false)
+check('a local path does NOT', registered.canOpen(addressOf('/Users/saikewei/code_proj/thing.go')) === false)
+check('a sibling root that only shares a prefix does NOT', registered.canOpen(addressOf('/workspaces/ShutterSeek-other/x.go')) === false)
+check('another scheme does NOT', registered.canOpen('https://example.com/x.go') === false)
+check('a bare session address does NOT', registered.canOpen('dsh-resource://file/session/session-1') === false)
+check('nonsense does NOT', registered.canOpen(undefined) === false)
+check(
+  'an address with encoded segments still resolves',
+  registered.canOpen(addressOf(CONTAINER_ROOT + '/a b/c.go')) === true,
+)
+check(
+  'and a segment containing a slash is not mistaken for a separator',
+  registered.canOpen(addressOf(CONTAINER_ROOT + '/a%2Fb.go')) === true,
+)
+check('the title is the basename', registered.title(addressOf(CONTAINER_ROOT + '/a/b/cache.go')) === 'cache.go')
+
+check('the pane body registers under the type id, not the kind', paneBody?.registration?.key === registered.id, JSON.stringify(paneBody?.registration))
+check('through an injected slot, so a late declaration still lands', injected.includes('sidebar.right.pane.tab'))
 
 console.log('')
 if (failures > 0) {

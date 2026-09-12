@@ -214,5 +214,134 @@ check('saying what is missing', String(unmounted.body.error).includes('container
 
 registerContainerApi(apiCtx, deps)
 
+console.log('\n-- the container-file route --')
+// The "Files changed" row records the `file_path` the model passed to write/edit, which for a
+// routed session is a CONTAINER path. Every shipped surface that opens one goes through
+// `ctx.fs` — this plugin's empty local stand-in — so without this route the chips resolve
+// nowhere. The route is the one place that path can be turned back into content.
+const CONTAINER_ROOT = '/workspaces/ShutterSeek'
+const FILE_TEXT = 'package main\n'
+const fileCalls = []
+const fileChannel = {
+  request: async (frame) => {
+    fileCalls.push(frame)
+    if (frame.op === 'stat') {
+      if (frame.path.endsWith('/missing.go')) return { ok: true, exists: false }
+      if (frame.path.endsWith('/big.log') || frame.path.endsWith('/big.bin')) {
+        return { ok: true, exists: true, type: 'file', size: 5 * 1024 * 1024 }
+      }
+      return { ok: true, exists: true, type: 'file', size: FILE_TEXT.length }
+    }
+    if (frame.op === 'read') {
+      if (frame.path.endsWith('/binary.bin')) throw new Error('refusing to read a binary file')
+      return { ok: true, text: FILE_TEXT, bytes: FILE_TEXT.length }
+    }
+    if (frame.op === 'read_b64') {
+      // An oversized binary: the windowed path has no binary guard of its own, so the route
+      // has to apply one — this fixture is the ELF-file case that reached a browser as mojibake.
+      const bytes = frame.path.endsWith('/big.bin')
+        ? Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x02, 0x01, 0x01])
+        : Buffer.from(FILE_TEXT)
+      return {
+        ok: true,
+        base64: bytes.toString('base64'),
+        bytes: bytes.length,
+        total: 5 * 1024 * 1024,
+      }
+    }
+    throw new Error('unexpected op: ' + String(frame.op))
+  },
+}
+// Only container spellings resolve. Everything else is an ordinary local path, which this
+// route deliberately does not serve: the local filesystem is what the caller already reads.
+const fileWorlds = {
+  locate: (path) => {
+    if (path === CONTAINER_ROOT || path.startsWith(CONTAINER_ROOT + '/')) {
+      return { host: 'my-nas', world: 'container', container: 'epic', path }
+    }
+    if (path.startsWith('/volume1/')) return { host: 'my-nas', world: 'host', path }
+    return undefined
+  },
+  toMountRootPath: () => undefined,
+  knownRoots: [{ host: 'my-nas', path: CONTAINER_ROOT }],
+}
+const fileDeps = {
+  ...deps,
+  worlds: fileWorlds,
+  forTarget: () => fileChannel,
+  cfg: { ...deps.cfg, container: 'epic', containerRoot: CONTAINER_ROOT },
+}
+registerContainerApi(apiCtx, fileDeps)
+const fileAs = (path) => call('GET', '/file?path=' + encodeURIComponent(path))
+
+const served = await fileAs(CONTAINER_ROOT + '/internal/service/cache.go')
+check('a container path is served', served.status === 200, JSON.stringify(served.body))
+check('with the file text', served.body.text === FILE_TEXT, JSON.stringify(served.body.text))
+check('and the container path it read', served.body.remotePath === CONTAINER_ROOT + '/internal/service/cache.go', String(served.body.remotePath))
+check('not truncated', served.body.truncated === false, String(served.body.truncated))
+
+const localPath = await fileAs('/Users/saikewei/code_proj/thing.go')
+check('a local path is refused rather than read from this machine', localPath.status === 400, String(localPath.status))
+const relative = await fileAs('internal/service/cache.go')
+check('a relative path is refused', relative.status === 400, String(relative.status))
+const traversal = await fileAs(CONTAINER_ROOT + '/../../etc/passwd')
+check('a traversal that leaves the root is refused', traversal.status === 400, String(traversal.status))
+check('and none of the refusals reached the channel', fileCalls.every((c) => c.path.startsWith(CONTAINER_ROOT)), JSON.stringify(fileCalls.map((c) => c.path)))
+
+const onHost = await fileAs('/volume1/docker/ShutterSeek/main.go')
+check('a path that resolves to the machine itself is refused', onHost.status === 400, String(onHost.status))
+check('saying which machine it belongs to', String(onHost.body.error).includes('my-nas'), String(onHost.body.error))
+
+const absentFile = await fileAs(CONTAINER_ROOT + '/missing.go')
+check('a file that is not there is a 404', absentFile.status === 404, String(absentFile.status))
+check('and is not read', !fileCalls.some((c) => c.op === 'read' && c.path.endsWith('/missing.go')))
+
+const binaryFile = await fileAs(CONTAINER_ROOT + '/binary.bin')
+check('a binary file is a 415, not a 502', binaryFile.status === 415, String(binaryFile.status))
+check('and says why', String(binaryFile.body.error).includes('not text'), String(binaryFile.body.error))
+
+const bigFile = await fileAs(CONTAINER_ROOT + '/big.log')
+check('an oversized file is still served', bigFile.status === 200, String(bigFile.status))
+check('marked truncated', bigFile.body.truncated === true, String(bigFile.body.truncated))
+check('reporting the ORIGINAL size', bigFile.body.bytes === 5 * 1024 * 1024, String(bigFile.body.bytes))
+const BIG_SIZE = 5 * 1024 * 1024
+const bigWindow = fileCalls.filter((c) => c.op === 'read_b64').at(-1)
+check(
+  'and read as a bounded window, not whole',
+  bigWindow !== undefined && bigWindow.length > 0 && bigWindow.length < BIG_SIZE,
+  JSON.stringify(bigWindow),
+)
+check('from the head of the file', bigWindow?.offset === 0, JSON.stringify(bigWindow))
+check('and the window is what is served', bigFile.body.text === FILE_TEXT, JSON.stringify(bigFile.body.text))
+
+// The helper refuses a binary only on the whole-file read. The windowed path has no such guard,
+// so an oversized executable used to come back as a 200 and a screenful of mojibake — verified
+// against the real container, where the 48 MB `server` binary did exactly that.
+const bigBinary = await fileAs(CONTAINER_ROOT + '/big.bin')
+check('an oversized BINARY is still refused', bigBinary.status === 415, String(bigBinary.status))
+check('and carries no text at all', bigBinary.body.text === undefined, JSON.stringify(bigBinary.body).slice(0, 120))
+
+const deadChannel = { request: async () => { throw new Error('ssh: connect to host my-nas port 22: Operation timed out') } }
+registerContainerApi(apiCtx, { ...fileDeps, forTarget: () => deadChannel })
+const broken = await fileAs(CONTAINER_ROOT + '/main.go')
+check('a channel that cannot answer is a 502, not an empty file', broken.status === 502, String(broken.status))
+check('with what went wrong', String(broken.body.error).includes('Operation timed out'), String(broken.body.error))
+
+registerContainerApi(apiCtx, fileDeps)
+const noChannel = await fileAs(CONTAINER_ROOT + '/main.go')
+check('and a profile with no channel for the host says so', noChannel.status === 200, String(noChannel.status))
+registerContainerApi(apiCtx, { ...fileDeps, forTarget: () => undefined })
+const detached = await fileAs(CONTAINER_ROOT + '/main.go')
+check('a host with no channel at all is a 502', detached.status === 502, String(detached.status))
+
+// The browser half decides synchronously whether an address is a container file, so the host
+// publishes the roots it routes. The two must agree, or a chip would open a tab that 400s.
+const config = await call('GET', '/config')
+check('the config names the roots this profile routes', Array.isArray(config.body.knownRoots), JSON.stringify(config.body.knownRoots))
+check('and the container root is one of them', config.body.knownRoots?.some((r) => r.path === CONTAINER_ROOT), JSON.stringify(config.body.knownRoots))
+check('with the machine that serves it', config.body.knownRoots?.some((r) => r.host === 'my-nas'), JSON.stringify(config.body.knownRoots))
+
+registerContainerApi(apiCtx, deps)
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))
 process.exit(failures === 0 ? 0 : 1)

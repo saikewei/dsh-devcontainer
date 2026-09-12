@@ -425,6 +425,52 @@ read  (file_path = 挂载点/go.mod):
 
 ---
 
+## 附五：端口转发为什么不是 `ssh -L`（2026-09）
+
+VS Code 的端口映射，最直觉的实现是让 ssh 把本地端口转到容器端口：
+
+```
+ssh -N -L 8000:172.18.0.4:8000 nas     # 容器的网桥地址
+ssh -N -L 8000:127.0.0.1:8000 nas      # NAS 自己的 loopback
+```
+
+**两条都不成立**，而且不是差一点。实测：
+
+| 检查 | 结果 |
+| --- | --- |
+| 容器内 `ss -ltnp` | 真实服务**全部只绑 `127.0.0.1`**（uvicorn:8000，另两个 Python 服务），只有 docker 内嵌 DNS 绑在 `127.0.0.11` |
+| NAS 上连 `172.18.0.4:8000` | **Connection refused** —— 服务根本没绑那个地址，不是防火墙问题 |
+| 容器内 `net.connect(8000,'127.0.0.1')` | **成功**，而且是个活服务（HTTP 404） |
+
+第二条正是 `ssh -L` 会做的事：sshd 在 NAS 的网络命名空间里发起连接，而容器的 loopback 在另一个命名空间里，永远够不着。第一条不行是因为服务压根没监听网桥地址。所以**连接必须在容器内部发起**——这也是 VS Code 能work的原因：它的 server 就跑在容器里。
+
+### 做法：复用已有的常驻通道
+
+helper 本来就在容器里跑，于是让它 `net.connect` 目标端口，字节走已经有连接的那条 JSON-lines 通道：
+
+```
+浏览器 → 本地 net.createServer → channel.notify({event:'relay_data',b64})
+       → ssh stdin → docker exec stdin → helper → net.connect → 127.0.0.1:8000
+```
+
+- **每条 TCP 连接一个 relay**（`relayId`），互不排队，浏览器的并发请求才是并发的。
+- **通知帧不带 `id`**：`relay_data` 是唯一一种主机→helper 且**不回帧**的消息。用 `request()` 的话每块数据都要配一个响应，等于把一条管道的流量翻倍。
+- **两个方向都做背压**：helper 侧 `process.stdout.write` 返回 false 就 `socket.pause()` 等 `drain`；主机侧 `notify()` 返回 false 就 `socket.pause()` 等 `onceDrain`；helper 收到主机数据时若 socket 写满，则 `lines.pause()`——那会把背压一路传回浏览器。
+- 端口探测（`ss -ltnp`，退回到 `/proc/net/tcp*`）**只返回原文**，解析放在主机侧 `lib/ports.js`：带边界情况的那一半因此可以用 fixture 测，不必依赖容器。
+
+### 踩过的三个坑
+
+1. **对端会在 relay 建好之前就开始说话。** 浏览器一连上就写请求，而 helper 要等 `relay_open` 往返回来才有 socket 可写——**先到的字节被丢弃，整个交互死锁**：请求没到，响应就永远不会来，调用方只看到一个光秃秃的超时。修法是 `relay_open` 之前 `socket.pause()`，成功后再 `resume()`，让字节留在 socket 自己的缓冲区里。这条有专门的回归断言（用一道闸门卡住 `relay_open`）。
+2. **`pkill -f <path>` 会杀掉自己。** 执行它的那个 shell，命令行里就带着同一个字符串。加方括号（`dsh-fwd-probe[.]js`）只在模式没有以字面量出现在同一命令行里时管用——而同一个 exec 里紧接着的 `nohup node /tmp/dsh-fwd-probe.js` 正好让它失效。改成从 `ss -ltnp` 里读出占用端口的 PID 再 kill，精确且不可能误伤。
+3. **Node 的 global agent 默认 keep-alive。** 测试里"停掉转发后端口应该拒连"一度失败：新请求复用了先前那条池化连接，于是拿到一个 200。`agent: false` 才是每次新连接。
+
+### 边界
+
+- 只做容器世界；NAS 宿主自身端口不在范围内。
+- 默认只绑 `127.0.0.1`。改 `forwardBind` 是显式操作，面板和工具输出都会带上它。
+- 转发不跨进程存活。开机要恢复的端口写进配置的 `forward` 列表，或打开 `forwardAuto`。
+- 自动转发默认关闭：一条转发占的是操作者机器上的端口。
+
 ## 附：本次产出文件
 
 | 文件 | 说明 |
@@ -437,7 +483,9 @@ read  (file_path = 挂载点/go.mod):
 | `lib/search.js` | `glob`/`grep`：容器内走通道，本地走随包 ripgrep |
 | `lib/browse.js` + `lib/client.js` | 工作区选择器（远程/本机两个选项卡） |
 | `examples/profile.cordis.patch.yml` | profile 加载层模板 |
-| `lib/channel.js` | 常驻 helper 通道：帧协议、握手校验、终态清理 |
+| `lib/channel.js` | 常驻 helper 通道：帧协议、握手校验、终态清理、通知帧与背压 |
+| `lib/ports.js` | 端口转发：监听端口解析 + 转发管理器（每条连接一个 relay） |
+| `test/ports.mjs` | 转发与解析的单元测试（伪通道，无容器） |
 | `test/worlds.mjs` | 世界映射与 `ensure` 判定的单元测试 |
 | `test/channel.mjs` | 通道帧协议与终态路径的单元测试（伪 transport） |
 | `test/route.mjs` | 世界判定 resolver 的单元测试 |

@@ -172,6 +172,49 @@ check(
   /typeof listing\.parent !== 'string'/.test(source) && source.includes('disabled: disabled || parent === null'),
 )
 
+console.log('\n-- the port panel takes both seats, under one id --')
+// The sidebar resolves a `sidebar.panellist` entry's id to the `main` cell of that EXACT id.
+// A mismatch registers two things that never meet: an icon that opens nothing.
+const panelId = source.match(/const PORTS_PANEL_ID = '([^']+)'/)
+check('the panel id is declared once', panelId !== null, String(panelId))
+const panellistRegistration = source.match(/name: 'sidebar\.panellist',\s*\n\s*id: ([A-Za-z_$][\w$]*)/)
+const mainRegistration = source.match(/name: 'main', key: ([A-Za-z_$][\w$]*)/)
+check('the sidebar row registers', panellistRegistration !== null, String(panellistRegistration))
+check('the main panel registers', mainRegistration !== null, String(mainRegistration))
+check(
+  'and both use the SAME binding, not two literals that could drift apart',
+  panellistRegistration !== null && mainRegistration !== null
+  && panellistRegistration[1] === mainRegistration[1] && panellistRegistration[1] === 'PORTS_PANEL_ID',
+  String(panellistRegistration === null ? '?' : panellistRegistration[1]) + ' vs ' + String(mainRegistration === null ? '?' : mainRegistration[1]),
+)
+
+// The sidebar owns the row, the tooltip, the active state and the CLICK. A glyph that drew its
+// own button would nest one button inside another.
+const glyphAt = source.indexOf('function PortsGlyph(props)')
+const glyphBody = source.slice(glyphAt, source.indexOf('function PortRow(props)'))
+check('the glyph exists', glyphAt !== -1)
+check('it draws no button of its own', !glyphBody.includes('button'), 'the sidebar owns the button and the click')
+check('and follows the row colour in both themes', glyphBody.includes("stroke: 'currentColor'"), 'a fixed colour breaks one theme')
+check('the glyph reads the size the sidebar passes', glyphBody.includes('props.size'))
+
+console.log('\n-- the panel stops polling when it is not mounted --')
+const panelBody = source.slice(source.indexOf('function PortsPanel()'), source.indexOf('async function containerApiMounted'))
+check('the panel body was found', panelBody.length > 500, String(panelBody.length) + ' chars')
+check('the panel registers an interval', panelBody.includes('setInterval('))
+check('and clears it on unmount', /clearInterval\(timer\)/.test(panelBody), 'an uncleared interval keeps polling after the panel is gone')
+check('from the effect\'s own cleanup', /return \(\) => \{[\s\S]{0,140}clearInterval\(timer\)/.test(panelBody), 'a clear outside the cleanup never runs')
+check('one reader is shared, so a poll cannot overwrite a newer refresh', panelBody.includes('reading.current'))
+check('a failed poll keeps the last good list', panelBody.includes('previous.data'))
+check('a probe failure is shown rather than drawn as an empty list', panelBody.includes('listeningError'))
+
+console.log('\n-- the panel rides the same probe as the picker --')
+const applyBody = source.slice(source.indexOf('async function apply(ctx)'))
+check(
+  'the panel registers only after the container-API probe',
+  applyBody.indexOf('containerApiMounted') !== -1 && applyBody.indexOf('sidebar.panellist') > applyBody.indexOf('containerApiMounted'),
+)
+check('and is injected rather than registered blind', applyBody.includes("inject('sidebar.panellist'") && applyBody.includes("'main'"))
+
 console.log('')
 if (failures > 0) {
   console.log(failures + ' CHECK(S) FAILED')

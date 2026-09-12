@@ -89,6 +89,9 @@ mountRoot + '/' + host + hostPath  =  替身
 | `devc_ls` | 列出目录，带类型与大小。 |
 | `devc_grep` | 在容器内 `grep -E`，返回 `file:line:` 形式的匹配。上限 250 行。 |
 | `devc_glob` | 启用 `globstar` 的 bash glob，例如 `**/*.go`。上限 200 条路径。 |
+| `devc_ports` | 已经转发到本机的端口，以及容器正在监听的端口。 |
+| `devc_forward` | 把容器里的端口映射到本机，类似编辑器的端口转发。返回本地 URL。 |
+| `devc_unforward` | 停止一条转发并释放本地端口。 |
 
 错误以文本形式返回（`[dsh-devcontainer error] …`）而不是抛出，因此一次失败调用不会中断整个轮次——模型读到消息后会自我纠正。
 
@@ -153,6 +156,10 @@ git config --global --add safe.directory /workspaces/your-project
 | `workspaceTitle` | *（容器根目录名）* | 自动登记工作区的显示标题。 |
 | `defaultTimeoutMs` | `120000` | 调用方未指定时的单命令上限。 |
 | `maxTimeoutMs` | `600000` | 施加于任何调用方所给超时的上限。 |
+| `forward` | `[]` | 开机就转发的容器端口，让开发服务器重启后无需再问一次。 |
+| `forwardBind` | `127.0.0.1` | 转发的本地监听地址。默认只绑 loopback：绑所有网卡等于把容器的开发服务器发布到整个网络。 |
+| `forwardAuto` | `false` | 新出现的监听端口自动转发。默认关闭——一条转发占的是**你**机器上的端口。 |
+| `forwardIntervalMs` | `5000` | 自动转发轮询新端口的间隔。 |
 
 ## 已知限制
 
@@ -160,6 +167,7 @@ git config --global --add safe.directory /workspaces/your-project
 * 技能发现用 `node:fs` 遍历**本地**挂载点，看到的是空目录；只有技能*正文*经 `ctx.fs` 加载。
 * 容器侧写入按设计绕过本地沙箱。本插件不改变任何本地路径行为，而且路由会话的本地分支就是随包实现本身。
 * 只有那七个工具会被路由。侧边栏文件浏览器、技能发现等直接读 `ctx.fs` 的消费者，对镜像工作区看到的仍是本地替身——这是"永不替换全局服务"的代价。要读容器内部，用 `devc_read`/`devc_ls`/`devc_glob`/`devc_grep`。
+* 一条被转发的连接，字节是以 base64 装在 JSON 行里走常驻通道的——比净荷多约三分之一流量，且和文件工具共用同一条管道。对开发服务器这是划算的取舍，搬大文件则不是。
 
 ## 开发
 

@@ -45,15 +45,17 @@ const added = after.filter((toolName) => !before.has(toolName))
 console.log('tools after  ->', after.length, '| added:', added.join(', '))
 
 console.log('\n-- activation --')
-// Two surfaces: the container the development happens in, and the host that runs it.
+// Three surfaces: the container the development happens in, the host that runs it, and the
+// network between them.
 const CONTAINER_TOOLS = [
   'devc_status', 'devc_exec', 'devc_read', 'devc_write', 'devc_edit', 'devc_ls', 'devc_grep', 'devc_glob',
 ]
 const HOST_TOOLS = ['devc_host_exec', 'devc_host_read', 'devc_host_write', 'devc_host_ls', 'devc_containers']
-const expected = [...CONTAINER_TOOLS, ...HOST_TOOLS]
+const PORT_TOOLS = ['devc_ports', 'devc_forward', 'devc_unforward']
+const expected = [...CONTAINER_TOOLS, ...HOST_TOOLS, ...PORT_TOOLS]
 const missing = expected.filter((tool) => !added.includes(tool))
 check('plugin activated through ctx.plugin with real inject resolution', missing.length === 0, 'missing: ' + missing.join(',') || added.join(','))
-check('both surfaces are live: ' + expected.length + ' tools', added.length === expected.length, added.join(','))
+check('every surface is live: ' + expected.length + ' tools', added.length === expected.length, added.join(','))
 
 // Drive one call through the REAL registry, not through a captured definition.
 console.log('\n-- dispatch through the real registry --')

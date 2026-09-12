@@ -151,5 +151,68 @@ registerContainerApi(apiCtx, deps)
 const healthy = await listAs('my-nas')
 check('and a working listing is still a listing', healthy.status === 200, String(healthy.status))
 
+console.log('\n-- the ports routes --')
+// These live in the SAME prefix handler as the picker, because `webServer.register` throws on a
+// duplicate (kind, path) and the precedence of an `exact` route over this `prefix` one is not a
+// documented guarantee. So the dispatch on method is what has to be right.
+const portCalls = []
+const fakeForwards = {
+  bind: '127.0.0.1',
+  list: () => [{ container: 'epic', remotePort: 8000, localPort: 8000, auto: false, connections: 2, url: 'http://127.0.0.1:8000', localAddress: '127.0.0.1:8000', substituted: false }],
+  listening: async () => ({ ok: true, source: 'ss', ports: [{ port: 8000, address: '127.0.0.1', process: 'uvicorn', internal: false, loopback: true }] }),
+  add: async (request) => { portCalls.push(request); return { ok: true, forward: { container: 'epic', remotePort: request.port, localPort: request.localPort ?? request.port, substituted: false, auto: false, connections: 0, url: 'http://127.0.0.1:' + String(request.localPort ?? request.port), localAddress: '', } } },
+  // Synchronous, like the real `Forwards.remove`: the route reads `.ok` off the result without
+  // awaiting, so an async fake here would hide a contract change instead of catching it.
+  remove: (request) => { portCalls.push(request); return { ok: true, stopped: { container: 'epic', remotePort: request.port, localPort: request.port } } },
+}
+registerContainerApi(apiCtx, { ...deps, forwards: fakeForwards, cfg: { ...deps.cfg, container: 'epic' } })
+
+/** One request against the shared prefix handler, returning status and parsed body. */
+const call = async (method, route, payload) => {
+  let status = null
+  let body = ''
+  const res = { writeHead: (code) => { status = code }, end: (text) => { body = String(text ?? '') }, setHeader: () => {} }
+  const req = { method, url: 'http://x/dsh-devcontainer' + route, async *[Symbol.asyncIterator]() {
+    if (payload !== undefined) yield Buffer.from(JSON.stringify(payload))
+  } }
+  await handler(req, res)
+  let parsed
+  try { parsed = JSON.parse(body) } catch { parsed = body }
+  return { status, body: parsed }
+}
+
+const listed = await call('GET', '/ports')
+check('GET /ports answers', listed.status === 200, String(listed.status))
+check('with the live forwards', listed.body.forwards?.[0]?.remotePort === 8000, JSON.stringify(listed.body))
+check('and what the container is listening on', listed.body.listening?.[0]?.process === 'uvicorn', JSON.stringify(listed.body.listening))
+check('naming the bind address it would use', listed.body.bind === '127.0.0.1', String(listed.body.bind))
+check('and no probe error when the probe ran', listed.body.listeningError === undefined, String(listed.body.listeningError))
+
+const added = await call('POST', '/ports', { port: 5173 })
+check('POST /ports starts a forward', added.status === 200 && added.body.forward?.remotePort === 5173, JSON.stringify(added.body))
+check('and the request reached the forwards layer', portCalls.some((c) => c.port === 5173), JSON.stringify(portCalls))
+
+const removed = await call('DELETE', '/ports', { port: 5173 })
+check('DELETE /ports stops one', removed.status === 200 && removed.body.stopped?.remotePort === 5173, JSON.stringify(removed.body))
+
+check('an unsupported method is refused', (await call('PUT', '/ports')).status === 405)
+check('and the picker routes still answer', (await call('GET', '/config')).status === 200)
+
+// A probe that failed must not be drawn as "nothing is listening": that is the same wrong
+// answer this codebase already fixed once for directory listings.
+registerContainerApi(apiCtx, { ...deps, forwards: { ...fakeForwards, listening: async () => ({ ok: false, error: 'channel is not connected' }) }, cfg: { ...deps.cfg, container: 'epic' } })
+const probeFailed = await call('GET', '/ports')
+check('a failed probe is reported as one', probeFailed.status === 200 && probeFailed.body.listeningError === 'channel is not connected', JSON.stringify(probeFailed.body))
+check('and the list is empty rather than invented', Array.isArray(probeFailed.body.listening) && probeFailed.body.listening.length === 0)
+
+// A profile that mounted the package without a container: say that, rather than answering an
+// empty list the panel would draw as "nothing is forwarding".
+registerContainerApi(apiCtx, deps)
+const unmounted = await call('GET', '/ports')
+check('no forwards layer at all is a 503, not an empty answer', unmounted.status === 503, String(unmounted.status))
+check('saying what is missing', String(unmounted.body.error).includes('container'), String(unmounted.body.error))
+
+registerContainerApi(apiCtx, deps)
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))
 process.exit(failures === 0 ? 0 : 1)

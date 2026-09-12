@@ -34,3 +34,19 @@
     # the same files through the host path; this addresses the container's own spelling directly.
     #
     # mountPoint: /Users/you/.dsh/devcontainer/my-project
+    #
+    # Port forwarding. A dev server inside the container is bound to its OWN loopback, which
+    # nothing outside the container can reach — so the plugin dials it from inside and carries
+    # the bytes over the channel it already has. Give it the ports you always want mapped:
+    #
+    # forward: [5173, 8000]
+    #
+    # The local address a forward binds. Loopback on purpose: binding every interface would
+    # publish the container's dev server to the whole network.
+    #
+    # forwardBind: 127.0.0.1
+    #
+    # Or let it follow the container: every new listening port is forwarded as it appears. Off
+    # by default, because a forward occupies a port on YOUR machine.
+    #
+    # forwardAuto: false

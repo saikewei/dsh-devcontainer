@@ -113,6 +113,9 @@ the file.
 | `devc_ls` | List a directory with type and size. |
 | `devc_grep` | `grep -E` across the container, returning `file:line:` matches. Capped at 250 lines. |
 | `devc_glob` | Bash glob with `globstar`, e.g. `**/*.go`. Capped at 200 paths. |
+| `devc_ports` | What is already forwarded to this machine, and what the container is listening on. |
+| `devc_forward` | Make a container port reachable here, like an editor's port forwarding. Returns the local URL. |
+| `devc_unforward` | Stop a forward and release its local port. |
 
 Errors come back as text (`[dsh-devcontainer error] …`) rather than thrown, so a failed call never
 aborts the turn — the model reads the message and corrects itself.
@@ -202,6 +205,10 @@ effects. The container and your SSH access to it are the boundary.
 | `workspaceTitle` | *(container root basename)* | Title for the auto-registered workspace. |
 | `defaultTimeoutMs` | `120000` | Per-command ceiling when the caller states none. |
 | `maxTimeoutMs` | `600000` | Ceiling applied to any caller-supplied timeout. |
+| `forward` | `[]` | Container ports to forward on boot, so a dev server is reachable without asking again. |
+| `forwardBind` | `127.0.0.1` | Local address a forward binds. Loopback on purpose: every interface would publish the container's dev server to the network. |
+| `forwardAuto` | `false` | Forward every listening port as it appears. Off by default — a forward occupies a port on **your** machine. |
+| `forwardIntervalMs` | `5000` | How often the auto-forward poll looks for new ports. |
 
 ## Known limits
 
@@ -215,6 +222,9 @@ effects. The container and your SSH access to it are the boundary.
 * Only the seven tools route. The sidebar file browser, skill discovery and other consumers of
   `ctx.fs` still see the local stand-in for a mirrored workspace — the price of never replacing a
   global service. `devc_read`/`devc_ls`/`devc_glob`/`devc_grep` reach inside the container instead.
+* A forwarded connection's bytes cross the resident channel base64-encoded inside JSON lines —
+  about a third more traffic than the payload, sharing one pipe with the file tools. That is the
+  right trade for a dev server and the wrong one for moving large files.
 
 ## Development
 

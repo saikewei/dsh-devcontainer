@@ -40,3 +40,15 @@
         # stand-in of its own.
         mountRoot: ''
         tools: true
+        # Container ports to forward to this machine at boot, so a dev server is reachable
+        # without asking again after a restart. Empty means none.
+        forward: []
+        # The local address a forward binds. Loopback is the default on purpose: binding every
+        # interface would publish a container's dev server to the whole network.
+        forwardBind: '127.0.0.1'
+        # Forward every listening port the container has, as it appears. Off by default — a
+        # forward occupies a port on YOUR machine, and taking ports nobody asked for is the
+        # operator's call, not the plugin's.
+        forwardAuto: false
+        # How often the auto-forward poll looks for new ports, in milliseconds.
+        forwardIntervalMs: 5000

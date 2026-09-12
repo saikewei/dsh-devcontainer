@@ -215,5 +215,37 @@ console.log('\n-- a channel that goes away with calls in flight --')
   check('and the channel no longer claims to be connected', channel.connected === false)
 }
 
+console.log('\n-- notifications carry connection bytes without expecting a reply --')
+{
+  // `request()` allocates an id and waits for a matching frame, so using it for relay data
+  // would double the traffic on the one pipe both directions share.
+  const transport = fakeTransport()
+  const channel = new RemoteChannel(transport, CONFIG, 'container')
+  check('an unconnected channel reports the write did NOT happen', channel.notify({ event: 'relay_data', relayId: 'r1', b64: 'AA==' }) === false)
+  await channel.connect()
+  const sentBefore = transport.state.sent.length
+  const accepted = channel.notify({ event: 'relay_data', relayId: 'r1', b64: 'aGk=' })
+  check('a connected channel accepts the frame', accepted === true)
+  check('exactly one frame went out', transport.state.sent.length === sentBefore + 1, String(transport.state.sent.length - sentBefore))
+  const frame = transport.state.sent[transport.state.sent.length - 1]
+  check('it carries the event, not an op', frame.event === 'relay_data' && frame.op === undefined, JSON.stringify(frame))
+  check('and no id, so the helper answers nothing', frame.id === undefined, JSON.stringify(frame))
+  check('the payload survives the round trip', Buffer.from(frame.b64, 'base64').toString('utf8') === 'hi')
+
+  // A notification must not register a pending entry: one would sit there until its timeout
+  // and then reject, and nothing would ever resolve it.
+  await settle(30)
+  check('and nothing was left pending to time out', channel.connected === true)
+  const frameCount = transport.state.sent.length
+  check('a second notification is not answered either', channel.notify({ event: 'relay_data', relayId: 'r1', b64: 'eA==' }) === true && transport.state.sent.length === frameCount + 1)
+
+  let drained = false
+  channel.onceDrain(() => { drained = true })
+  check('onceDrain registers without firing immediately', drained === false, String(drained))
+  channel.dispose()
+  // A disposed channel must not pretend a write landed.
+  check('a disposed channel reports the write did NOT happen', channel.notify({ event: 'relay_data', relayId: 'r1', b64: 'AA==' }) === false)
+}
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))
 process.exit(failures === 0 ? 0 : 1)

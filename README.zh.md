@@ -171,7 +171,7 @@ git config --global --add safe.directory /workspaces/your-project
 | `defaultTimeoutMs` | `120000` | 调用方未指定时的单命令上限。 |
 | `maxTimeoutMs` | `600000` | 施加于任何调用方所给超时的上限。 |
 | `forward` | `[]` | 开机就转发的容器端口，让开发服务器重启后无需再问一次。 |
-| `forwardBind` | `127.0.0.1` | 转发的本地监听地址。默认只绑 loopback：绑所有网卡等于把容器的开发服务器发布到整个网络。 |
+| `forwardBind` | `127.0.0.1` | 新建转发的**默认**监听地址。默认只绑 loopback：绑所有网卡等于把容器的开发服务器发布到整个网络。可以按转发单独覆盖——`devc_forward({ bind: '0.0.0.0' })`，或面板上的**共享**按钮——这样共享一个端口不会连带共享其余的。 |
 | `forwardAuto` | `false` | 新出现的监听端口自动转发。默认关闭——一条转发占的是**你**机器上的端口。 |
 | `forwardIntervalMs` | `5000` | 自动转发轮询新端口的间隔。 |
 

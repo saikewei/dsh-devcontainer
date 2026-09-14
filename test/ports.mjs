@@ -354,5 +354,51 @@ const noChannel = new Forwards({ channels: { forTarget: () => undefined }, bind:
 check('a target with no channel is refused, not probed', (await noChannel.listening({ host: 'nas', container: 'x' })).ok === false)
 forwards.disposeAll()
 
+console.log('\n-- who can reach a forward is decided per forward --')
+// The profile's `forwardBind` is a DEFAULT, not the whole story: sharing ONE port with a phone
+// should not put every other forward on the network with it.
+const shared = new Forwards({ channels: { forTarget: () => fakeChannel() }, bind: '127.0.0.1' })
+const kept = await shared.add({ host: 'nas', container: 'epic', port: 8101 })
+check('a forward with no bind keeps the default', kept.forward.bind === '127.0.0.1', String(kept.forward.bind))
+check('and is not advertised as reachable', kept.forward.lan === false, String(kept.forward.lan))
+check('with a loopback URL', kept.forward.url === 'http://127.0.0.1:8101', kept.forward.url)
+
+const opened = await shared.add({ host: 'nas', container: 'epic', port: 8102, bind: '0.0.0.0' })
+check('a forward given a bind uses it', opened.forward.bind === '0.0.0.0', String(opened.forward.bind))
+check('and is advertised as reachable', opened.forward.lan === true, String(opened.forward.lan))
+check('naming the address it listens on', opened.forward.localAddress === '0.0.0.0:8102', opened.forward.localAddress)
+// `http://0.0.0.0:8102` opens nothing, so a wildcard has to be resolved to an address a phone
+// on the same network can actually type.
+check('and a URL a device elsewhere can open', /^http:\/\/\d+\.\d+\.\d+\.\d+:8102$/.test(opened.forward.url), opened.forward.url)
+check('never the wildcard itself', !opened.forward.url.includes('0.0.0.0'), opened.forward.url)
+
+const narrowed = await shared.add({ host: 'nas', container: 'epic', port: 8103, bind: '127.0.0.1' })
+check('the default still applies to the next forward, unchanged', narrowed.forward.bind === '127.0.0.1', String(narrowed.forward.bind))
+
+// The address reaches `server.listen`, so a value that is not an address is refused rather
+// than resolved into something unexpected.
+const badBind = await shared.add({ host: 'nas', container: 'epic', port: 8104, bind: 'not an address' })
+check('a bind that is not an address is refused', badBind.ok === false, JSON.stringify(badBind))
+check('saying what a bind address may be', /bind address/.test(String(badBind.error)), String(badBind.error))
+check('and nothing was bound for it', shared.has('nas', 'epic', 8104) === false)
+
+// A concrete address is exactly where it listens, so it is its own URL host — no guessing at
+// which interface was meant. NOT tested with a LAN address: that would open a real listener on
+// this machine's network interface, and `0.0.0.0` above already covers the `lan` flag.
+const concrete = await shared.add({ host: 'nas', container: 'epic', port: 8105, bind: 'localhost' })
+check('a concrete address is its own URL host', concrete.forward.url === 'http://localhost:8105', concrete.forward.url)
+check('and a concrete loopback host is not "on this network"', concrete.forward.lan === false, String(concrete.forward.lan))
+
+// An address this machine does not hold fails with the reason instead of binding elsewhere.
+// TEST-NET-1 is reserved precisely so it is never anyone's.
+const absent = await shared.add({ host: 'nas', container: 'epic', port: 8107, bind: '192.0.2.7' })
+check('an address this machine does not hold is refused', absent.ok === false, JSON.stringify(absent))
+check('naming the address it tried', String(absent.error).includes('192.0.2.7'), String(absent.error))
+check('and nothing was bound for it either', shared.has('nas', 'epic', 8107) === false)
+const v6Loop = await shared.add({ host: 'nas', container: 'epic', port: 8106, bind: '::1' })
+check('an IPv6 literal is bracketed in the URL', v6Loop.forward.url === 'http://[::1]:8106', v6Loop.forward.url)
+check('and IPv6 loopback is not "on this network"', v6Loop.forward.lan === false, String(v6Loop.forward.lan))
+shared.disposeAll()
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'))
 process.exit(failures === 0 ? 0 : 1)

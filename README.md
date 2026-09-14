@@ -238,7 +238,7 @@ effects. The container and your SSH access to it are the boundary.
 | `defaultTimeoutMs` | `120000` | Per-command ceiling when the caller states none. |
 | `maxTimeoutMs` | `600000` | Ceiling applied to any caller-supplied timeout. |
 | `forward` | `[]` | Container ports to forward on boot, so a dev server is reachable without asking again. |
-| `forwardBind` | `127.0.0.1` | Local address a forward binds. Loopback on purpose: every interface would publish the container's dev server to the network. |
+| `forwardBind` | `127.0.0.1` | DEFAULT local address for new forwards. Loopback on purpose: every interface would publish the container's dev server to the network. Override it per forward — `devc_forward({ bind: '0.0.0.0' })`, or the panel's **共享** button — so sharing one port does not share the rest. |
 | `forwardAuto` | `false` | Forward every listening port as it appears. Off by default — a forward occupies a port on **your** machine. |
 | `forwardIntervalMs` | `5000` | How often the auto-forward poll looks for new ports. |
 

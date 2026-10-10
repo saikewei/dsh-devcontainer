@@ -517,6 +517,34 @@ for (const path of ['/x/notes.txt', '/x/.gitignore', '/x/Makefile', '/x/data.unk
   check(`  ${path} still gets a block, with no grammar`, drawn !== undefined && drawn.props.lang === undefined, String(drawn?.props?.lang))
 }
 
+// The SHELL's own grammar helper answers when it exists. From 0.2 the primitives module exports
+// `languageForPath` and the preview package stopped carrying a copy of the table, so asking it is
+// how this plugin follows the grammars the shell actually ships instead of its own shorter list.
+const SHELL_GRAMMARS = { vue: 'vue', tf: 'hcl', mk: 'make', go: 'go' }
+const shellClient = makeClient({
+  CodeBlock: PRIMITIVES.CodeBlock,
+  languageForPath: (path) => {
+    const found = /\.([^./]+)$/u.exec(String(path))
+    return found === null ? undefined : SHELL_GRAMMARS[found[1].toLowerCase()]
+  },
+})
+const shellSink = {}
+await shellClient.apply(makeCtx({
+  slots: makeSlots(shellSink),
+  sidebarRightTabs: { register: () => () => {} },
+}))
+for (const [suffix, expected] of [['App.vue', 'vue'], ['main.tf', 'hcl'], ['build.mk', 'make'], ['main.go', 'go']]) {
+  const one = await renderPath(shellSink.body.component, CONTAINER_ROOT + '/' + suffix)
+  check(
+    `  ${suffix} takes the SHELL's answer (${expected})`,
+    findByType(one, 'CodeBlock')?.props?.lang === expected,
+    String(findByType(one, 'CodeBlock')?.props?.lang),
+  )
+}
+// The whole point: a grammar our own shorter table never knew still highlights.
+const vueLocal = await renderPath(paneBody.component, CONTAINER_ROOT + '/App.vue')
+check('our fallback table alone would not know vue', findByType(vueLocal, 'CodeBlock')?.props?.lang === undefined, String(findByType(vueLocal, 'CodeBlock')?.props?.lang))
+
 // A shell that never serves the primitives module loses only the highlighting: the file is
 // still drawn here rather than leaving an empty tab. The bare instance is a separate module
 // with its own captured body, because the require answer is fixed when the bundle loads.

@@ -107,7 +107,8 @@ to land:
   renders the shared `CodeBlock` from `@deepseek-ai/dsh-client-ui-primitives` — the very component
   the shipped previewer draws its code files with — so line numbers, syntax highlighting, the copy
   control and the scrolling are the original implementation's rather than a lookalike. The grammar
-  comes from the file's suffix, through the same extension→language table the previewer uses.
+  comes from the file's suffix, asked of the shell's own `languageForPath` — so the tab highlights
+  exactly what the shell can highlight, including `vue`, `svelte`, `graphql` and `hcl`.
 * Wrapping is a `white-space` on this tab's own scrollport, driven through the block's
   `--dsl-code-block-line-white-space` custom property, so the wrap toggle lives in this tab's header
   next to reload and defaults to wrapped as the previewer does.

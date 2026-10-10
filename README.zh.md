@@ -74,7 +74,7 @@ mountRoot + '/' + host + hostPath  =  替身
 
 * 它以 **`extension`** 档声明 `dsh-resource://file/session/**`，优先级高于随包文本预览器的 `fallback`，并且否决一切不落在本 profile 已路由根之下的地址。所以本地文件仍然由随包预览器打开，行为不变。
 * 该 tab 经 `GET /dsh-devcontainer/file` 读取，这条路由用的是工具所用的同一个 `worlds.locate` 来解析机器与容器。浏览器不指定机器、也不指定容器，所以它送来的东西无需被信任。
-* **代码由 harness 自己的渲染器画。** 我们只负责取字节：tab 渲染的是 `@deepseek-ai/dsh-client-ui-primitives` 里的 `CodeBlock`——正是随包预览器画代码文件用的那个组件——所以行号、语法高亮、复制按钮和滚动行为都是**原实现的**，不是仿制品。语法由文件后缀决定，用的是与预览器同一张扩展名→语言表。
+* **代码由 harness 自己的渲染器画。** 我们只负责取字节：tab 渲染的是 `@deepseek-ai/dsh-client-ui-primitives` 里的 `CodeBlock`——正是随包预览器画代码文件用的那个组件——所以行号、语法高亮、复制按钮和滚动行为都是**原实现的**，不是仿制品。语法由文件后缀决定，问的是 shell 自己的 `languageForPath`——所以这个 tab 能高亮的正是 shell 能高亮的那些，包括 `vue`、`svelte`、`graphql`、`hcl`。
 * 折行是本 tab 自己滚动容器上的一条 `white-space`，通过该 block 的 `--dsl-code-block-line-white-space` 自定义属性驱动。折行开关和刷新一起放在本 tab 的头部，默认开启，与原版一致。
 * 只处理文本，且只取前 2 MB。更长的文件**截断**提供而不是拒绝——对一份日志来说，开头才是有用的答案；二进制文件则以该理由拒绝，而不是渲染成乱码。
 

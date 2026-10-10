@@ -167,7 +167,7 @@ check('stat on an absent container path returns undefined', missing === undefine
 console.log('\n-- ctx.fs: container mutations --')
 // A previous crashed run may have left the scratch file behind; createIfAbsent is
 // supposed to refuse that, so clear it first rather than asserting on stale state.
-await shell.run(shell.resolve({ command: 'rm -f .dsh-routing-test.txt', workdir: mount() }))
+await (await shell.execute(shell.resolve({ command: 'rm -f .dsh-routing-test.txt', workdir: mount() }))).result()
 const scratch = await fs.resolve(mount('.dsh-routing-test.txt'))
 const created = await fs.writeText(scratch, 'alpha\nbeta\n', { kind: 'createIfAbsent' })
 console.log('writeText ->', created.operation, String(created.version))
@@ -210,13 +210,13 @@ const spec = shell.resolve({ command: 'echo "cwd=$(pwd)"; hostname; test -f /.do
 console.log('resolved workdir ->', spec.workdir)
 check('resolve maps the mount point to the container path', spec.workdir === CONFIG.containerRoot)
 
-const result = await shell.run(spec)
+const result = await (await shell.execute(spec)).result()
 console.log('run stdout:', result.stdout.text.trim().split('\n').join(' | '))
 check('the command ran inside the container', result.stdout.text.includes('in_container=yes'))
 check('the command ran in the container workdir', result.stdout.text.includes('cwd=' + CONFIG.containerRoot))
 check('a successful run reports exit 0 and no sandbox facts', result.exitCode === 0 && result.sandbox === undefined)
 
-const failing = await shell.run(shell.resolve({ command: 'exit 7', workdir: mount() }))
+const failing = await (await shell.execute(shell.resolve({ command: 'exit 7', workdir: mount() }))).result()
 check('a non-zero exit is reported, not thrown', failing.exitCode === 7)
 
 console.log('\n-- ctx.shell: background streaming --')
@@ -228,8 +228,11 @@ const TICKS = ['tick1', 'tick2', 'tick3', 'tick4', 'tick5']
 let roundsComplete = 0
 let lastStreamed = ''
 let settledStatus = ''
+// A second read must return only what is NEW. Without this, a reader that never advanced its
+// offset would look correct on one read and then replay the whole log on the next.
+let cleanSecondRead = 0
 for (let round = 0; round < 5; round++) {
-  const proc = shell.start(shell.resolve({
+  const proc = await shell.execute(shell.resolve({
     command: 'for i in 1 2 3 4 5; do echo tick$i; done',
     workdir: mount(),
   }))
@@ -238,10 +241,27 @@ for (let round = 0; round < 5; round++) {
   lastStreamed = streamed.trim()
   settledStatus = proc.status
   if (TICKS.every((tick) => streamed.includes(tick))) roundsComplete++
+  if (proc.readOutput().delta === '') cleanSecondRead++
 }
 console.log('streamed (last round):', JSON.stringify(lastStreamed))
 check('every background round streamed its complete output', roundsComplete === 5, roundsComplete + '/5 complete')
 check('the background process settles completed', settledStatus === 'completed', settledStatus)
+check('and reading twice returns only what is new', cleanSecondRead === 5, cleanSecondRead + '/5 clean')
+
+// The deadline lives on OUR side for a routed command: the helper's streaming op has no timeout
+// of its own, so nothing else would ever stop a command that hangs. Proven by the clock as well
+// as by the flags — a run that reported `timedOut` after actually sleeping would be worse than
+// one that never reported it.
+console.log('\n-- a routed command that overruns its deadline is killed --')
+const slowStarted = Date.now()
+const slow = await shell.execute(shell.resolve({ command: 'sleep 30; echo never-printed', workdir: mount(), timeoutMs: 1500 }))
+const slowResult = await slow.result()
+const slowElapsed = Date.now() - slowStarted
+console.log('elapsed', String(slowElapsed) + 'ms', '| status', slow.status, '| timedOut', String(slowResult.timedOut))
+check('the overrun is reported as a timeout, not as an ordinary failure', slowResult.timedOut === true, JSON.stringify({ timedOut: slowResult.timedOut, exitCode: slowResult.exitCode }))
+check('and it did not sleep for the whole 30s', slowElapsed < 15000, String(slowElapsed) + 'ms')
+check('the command never reached its second statement', slowResult.stdout.text.includes('never-printed') === false, JSON.stringify(slowResult.stdout.text))
+check('the handle agrees it is not still running', slow.status !== 'running', slow.status)
 
 console.log('\n-- local world is untouched AND still sandboxed --')
 const localTarget = await fs.resolve('/tmp/dsh-devcontainer-local-test.txt')
@@ -258,7 +278,7 @@ check(
 let localRun = null
 let localRefused = null
 try {
-  localRun = await shell.run(shell.resolve({ command: 'echo local-here; hostname', workdir: '/tmp' }))
+  localRun = await (await shell.execute(shell.resolve({ command: 'echo local-here; hostname', workdir: '/tmp' }))).result()
 } catch (error) {
   localRefused = String(error.code ?? error.message)
 }
@@ -292,7 +312,7 @@ check(
 console.log('\n-- cleanup --')
 const removeTarget = await fs.resolve(mount('.dsh-routing-test.txt'))
 try {
-  await shell.run(shell.resolve({ command: 'rm -f .dsh-routing-test.txt', workdir: mount() }))
+  await (await shell.execute(shell.resolve({ command: 'rm -f .dsh-routing-test.txt', workdir: mount() }))).result()
   check('scratch file removed', (await fs.stat(removeTarget)) === undefined)
 } catch (error) {
   check('scratch file removed', false, String(error.message))

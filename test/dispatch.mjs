@@ -59,7 +59,7 @@ function recorder(world) {
           // The burst is emitted SYNCHRONOUSLY, before the response is returned — which is what
           // the resident channel really does, and the reason the stream dispatcher buffers by
           // execId instead of waiting for `claim`.
-          this.emit({ execId, event: 'chunk', stream: 'stdout', text: world + ' bg\n' })
+          this.emit({ execId, event: 'chunk', stream: 'stdout', text: world + ' ran ' + request.cmd + '\n' })
           this.emit({ execId, event: 'exit', code: 0, signal: null })
           return { ok: true, execId }
         }
@@ -199,7 +199,7 @@ const localSpec = shell.resolve({ command: 'echo hi', workdir: '/tmp' })
 check('a local workdir is left alone', localSpec.workdir === '/tmp', localSpec.workdir)
 
 container.calls.length = 0
-const run = await shell.run(containerSpec)
+const run = await (await shell.execute(containerSpec)).result()
 check('the container spec ran on the container channel', container.last()?.cmd === 'echo hi')
 check('and reported its exit code', run.exitCode === undefined || run.exitCode !== null, JSON.stringify(run.stdout))
 
@@ -306,8 +306,10 @@ check('an undecided shell spec keeps the local spelling — the remote path is n
 check('and that folder is still undecided', racedWorlds.locate(undecidedFolder)?.provisional === true)
 container.calls.length = 0
 host.calls.length = 0
-const racedRun = await raced.shell.run(racedSpec)
-check('the deferred spec still runs on the container channel', container.last()?.op === 'exec', JSON.stringify(container.last()))
+const racedRun = await (await raced.shell.execute(racedSpec)).result()
+// `exec_start` rather than `exec`: 0.2 has one entry point for both shapes, and the handle it
+// returns has to be able to stream, so the collect path rides the streaming op too.
+check('the deferred spec still runs on the container channel', container.last()?.op === 'exec_start', JSON.stringify(container.last()))
 check('with the container workdir', container.last()?.cwd === CONTAINER_PATH_2 + '/sub', String(container.last()?.cwd))
 check('and never on the host', host.calls.length === 0, JSON.stringify(host.calls))
 check('reporting the command result', racedRun.exitCode === 0 && racedRun.stdout.text.includes('ran hostname'), JSON.stringify(racedRun.stdout))
@@ -316,15 +318,18 @@ check('reporting the command result', racedRun.exitCode === 0 && racedRun.stdout
 const settledSpec = raced.shell.resolve({ command: 'pwd', workdir: MOUNT_ROOT + '/' + HOST_A + HOST_FOLDER })
 check('a decided folder is rewritten synchronously', settledSpec.workdir === CONTAINER_PATH, settledSpec.workdir)
 
-// The background path takes the same deferred route, and its handle must still come back
-// synchronously — the request is issued inside the chain.
+// The background path takes the same deferred route. It no longer returns a handle BEFORE the
+// request is issued: that contract belonged to 0.1.5's separate synchronous `start`. 0.2's
+// `execute` is async and claims the exec before returning, so for a command that finishes
+// immediately the handle comes back already settled — which is a fact about the run, not a
+// regression, and is what the checks below are about.
 container.calls.length = 0
 host.calls.length = 0
-const racedProc = raced.shell.start(raced.shell.resolve({
+const racedProc = await raced.shell.execute(raced.shell.resolve({
   command: 'echo bg',
   workdir: MOUNT_ROOT + '/' + HOST_A + HOST_FOLDER_2 + '/bg',
 }))
-check('the background handle is returned before the request is issued', racedProc.status === 'running', racedProc.status)
+check('the background handle describes the run it stands for', racedProc.status === 'completed' && racedProc.exitCode === 0, racedProc.status + '/' + String(racedProc.exitCode))
 await racedProc.done
 check('and the background exec found the container channel', container.last()?.op === 'exec_start', JSON.stringify(container.last()))
 check('with the container workdir', container.last()?.cwd === CONTAINER_PATH_2 + '/bg', String(container.last()?.cwd))
@@ -349,7 +354,7 @@ check('an undecidable path is REFUSED, not run on the host', racedRefusal.includ
 check('naming the reason', racedRefusal.includes('not usable'), racedRefusal)
 check('and no channel was asked to act on it', host.calls.length === 0 && container.calls.length === 0)
 
-const refusedRun = await raced.shell.run(raced.shell.resolve({ command: 'pwd', workdir: MOUNT_ROOT + '/' + HOST_B + '/srv/app' }))
+const refusedRun = await (await raced.shell.execute(raced.shell.resolve({ command: 'pwd', workdir: MOUNT_ROOT + '/' + HOST_B + '/srv/app' }))).result()
 check('the shell reports the same refusal instead of running', refusedRun.exitCode === null && refusedRun.stderr.text.includes('not usable'), JSON.stringify(refusedRun.stderr.text))
 
 // search follows the same rule: a placeholder must not answer "no matches" about a tree
